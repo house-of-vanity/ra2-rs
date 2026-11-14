@@ -1,0 +1,8 @@
+[package]
+name = "ra2-formats"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arena-core.workspace = true
+flate2.workspace = true

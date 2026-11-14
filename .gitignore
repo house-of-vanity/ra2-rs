@@ -1,0 +1,66 @@
+# Rust build products (Cargo.lock belongs in this application repository).
+target/
+/dist/
+/build/
+/artifacts/
+*.profraw
+*.profdata
+
+# Local Cargo cache and native reference/research environment.
+/.cargo-home/
+/.cache/
+/.original-reference/
+
+# Runtime output, captures and machine-specific preferences.
+/logs/
+.open-arena/
+/config/user-settings.ron
+/config/user-settings.ron.tmp
+
+# Original game content, if copied into the project for local testing.
+/RobotArena2/
+/RobotArena2-CD/
+/AI/
+/Arenas/
+/Components/
+/Music/
+/Sounds/
+/Teams/
+/UI/
+/Texture Library/
+/Custom Textures/
+/Robot Designs/
+/Scripts/
+/*.cfz
+/*.exe
+/*.dll
+/*.iso
+/*.nrg
+/*.rar
+
+# Editors, desktop metadata, temporary files and native probe build output.
+/.idea/
+/.vscode/
+.directory
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+__pycache__/
+*.py[cod]
+*.o
+*.obj
+*.elf
+*.pdb
+*.dSYM/
+/core
+/core.[0-9]*
+
+# Local environment overrides; keep distributable examples visible.
+.env
+.env.*
+!.env.example

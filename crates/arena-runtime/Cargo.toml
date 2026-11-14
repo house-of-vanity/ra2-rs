@@ -1,0 +1,9 @@
+[package]
+name = "arena-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arena-core.workspace = true
+bevy.workspace = true
+bevy_rapier3d.workspace = true

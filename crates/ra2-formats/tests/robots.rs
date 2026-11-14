@@ -1,0 +1,256 @@
+use arena_core::{Attachment, Mat4, Vec3};
+use ra2_formats::{
+    assembly::{self, ResolvedComponent},
+    bot,
+    components::ComponentCatalog,
+};
+use std::{collections::BTreeMap, io::Write, sync::Arc};
+
+fn fixture(minor: u32, parts: usize) -> Vec<u8> {
+    let mut text = format!("1.{minor:02}\nName: Fixture\nClass: 0\n");
+    if minor >= 12 {
+        text.push_str("1\n");
+    }
+    text.push_str(&format!("false\n{parts}\n-1\n0\n0\n0 0 0\n0 0 0 1\n0 0\nChassis\n\n3\n0 0\n1000 0\n0 1000\n0\n0.5 1\ntrue\n274 3 3 1\n1\n3 1 3 0\nRAW\n0 1 0\n0 1 0\n0 1 0\n0 0\n1 0\n0 1\n0 0 0\n1 0 0\n0 0 1\n0\n1\n2\nfalse\n"));
+    if minor >= 8 {
+        text.push_str("false\n");
+    }
+    text.push_str("0\n0\n0\n0\n0 8 0 80 0\n0.2 0.2 0.2 0.85 20\n");
+    if minor >= 11 {
+        text.push_str("0\n");
+    }
+    for _ in 1..parts {
+        text.push_str("0\n0\n1\n0 0 0\n0 0 0 1\n0 0\nWheel\nComponents\\wheel.txt\n");
+    }
+    if minor >= 11 {
+        text.push_str("false\n0\n");
+    }
+    text.push_str(&format!(
+        "1\nName: Drive\n0 0 1\n1\n0 0 10 0\n1\n{}\nF\n0 0 0\n",
+        parts - 1
+    ));
+    text.into_bytes()
+}
+
+#[test]
+fn all_four_versions_keep_geometry_mounts_controls_and_high_binding_indices() {
+    for version in [7, 8, 11, 12] {
+        let robot = bot::decode(&fixture(version, 15)).unwrap();
+        assert_eq!(robot.components.len(), 15);
+        assert_eq!(robot.bindings[0].component, 14);
+        assert_eq!(
+            robot.chassis.model.as_ref().unwrap().objects[0].faces.len(),
+            1
+        );
+        assert_eq!(robot.components[1].parent, Some(0));
+        assert_eq!(robot.controllers[0].keys[0][2], 10);
+        assert_eq!(robot.chassis.hardness, 80.0);
+        let saved = bot::encode(&robot).unwrap();
+        let loaded = bot::decode(&saved).unwrap();
+        assert_eq!(loaded.bindings[0].component, 14);
+        assert_eq!(loaded.source_version, robot.source_version);
+        assert_eq!(loaded.chassis.face_count, robot.chassis.face_count);
+        assert_eq!(
+            robot.chassis.model.as_ref().unwrap().objects[0].faces[0].uv[2],
+            [0.0, 1.0]
+        );
+    }
+}
+
+#[test]
+fn truncated_text_and_zero_quaternions_fail() {
+    let bytes = fixture(12, 2);
+    for end in 0..bytes.len() {
+        assert!(bot::decode(&bytes[..end]).is_err(), "accepted prefix {end}");
+    }
+    let text = String::from_utf8(bytes)
+        .unwrap()
+        .replacen("0 0 0 1\n", "0 0 0 0\n", 1);
+    assert!(
+        bot::decode(text.as_bytes())
+            .unwrap_err()
+            .contains("quaternion")
+    );
+}
+
+#[test]
+fn embedded_images_do_not_confuse_line_reader_and_keep_original_pixels() {
+    let bytes = fixture(12, 1);
+    let prefix = b"1.12\nName: Fixture\nClass: 0\n1\nfalse\n";
+    assert!(bytes.starts_with(prefix));
+    let mut image = vec![0u8; 18];
+    image[2] = 2;
+    image[12] = 128;
+    image[14] = 128;
+    image[16] = 32;
+    for _ in 0..128 * 128 {
+        image.extend([10, 13, 0, 0]);
+    }
+    let mut embedded = b"1.12\nName: Fixture\nClass: 0\n1\ntrue\n".to_vec();
+    embedded.extend(image);
+    embedded.extend(&bytes[prefix.len()..]);
+    let robot = bot::decode(&embedded).unwrap();
+    let snapshot = robot.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot[18], 10);
+    assert_eq!(snapshot[21], 0);
+    assert_eq!(robot.components.len(), 1);
+    assert_eq!(
+        bot::decode(&bot::encode(&robot).unwrap()).unwrap().snapshot,
+        robot.snapshot
+    );
+}
+
+#[test]
+fn assembly_aligns_own_socket_and_rejects_hierarchy_cycles() {
+    let mut robot = bot::decode(&fixture(12, 3)).unwrap();
+    let root = Arc::new(robot.chassis.model.as_ref().unwrap().clone());
+    let mut model = (*root).clone();
+    model.attachments.push(Attachment {
+        name: "mount".into(),
+        transform: Mat4::from_translation(Vec3::X),
+        properties: BTreeMap::from([("id".into(), "1".into())]),
+    });
+    let model = Arc::new(model);
+    let resolved = vec![
+        ResolvedComponent {
+            key: "chassis".into(),
+            model: root,
+            hidden: false,
+        },
+        ResolvedComponent {
+            key: "wheel".into(),
+            model: model.clone(),
+            hidden: false,
+        },
+        ResolvedComponent {
+            key: "wheel".into(),
+            model,
+            hidden: false,
+        },
+    ];
+    let assembly = assembly::assemble(&robot, &resolved).unwrap();
+    let mounted = assembly.parts[1].transform.transform_point3(Vec3::X);
+    assert!(mounted.length() < 0.0001);
+    robot.components[1].parent = Some(2);
+    robot.components[2].parent = Some(1);
+    assert!(
+        assembly::assemble(&robot, &resolved)
+            .unwrap_err()
+            .contains("Cyclic")
+    );
+}
+
+#[test]
+fn socket_rotation_matches_original_executable_measurement() {
+    use arena_core::Quat;
+    // Independently recorded from native 0x45e510, not generated by assemble().
+    // See docs/NATIVE_MOUNT_AUDIT.md for inputs, executable hash and probe scope.
+    let mut robot = bot::decode(&fixture(12, 3)).unwrap();
+    robot.components[1].mounting = Default::default();
+    robot.components[2].parent = Some(1);
+    robot.components[2].parent_mount = 2;
+    robot.components[2].mounting = arena_core::robot::MountPlacement {
+        twist: std::f32::consts::PI - 0.7,
+        ..Default::default()
+    };
+    let socket = |id: &str, rotation, position| Attachment {
+        name: id.into(),
+        transform: Mat4::from_rotation_translation(rotation, position),
+        properties: BTreeMap::from([("id".into(), id.into())]),
+    };
+    let mut parent = robot.chassis.model.as_ref().unwrap().clone();
+    parent.attachments = vec![
+        socket("1", Quat::IDENTITY, Vec3::ZERO),
+        socket(
+            "2",
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+            Vec3::new(1.0, 2.0, -3.0),
+        ),
+    ];
+    let mut child = parent.clone();
+    let own_anchor = Vec3::new(0.3, -0.2, -0.4);
+    child.attachments = vec![socket(
+        "1",
+        Quat::from_xyzw(-0.2, 0.4, 0.1, 0.79_f32.sqrt()),
+        own_anchor,
+    )];
+    let models = vec![
+        ResolvedComponent {
+            key: "chassis".into(),
+            model: Arc::new(robot.chassis.model.clone().unwrap()),
+            hidden: false,
+        },
+        ResolvedComponent {
+            key: "parent".into(),
+            model: Arc::new(parent),
+            hidden: false,
+        },
+        ResolvedComponent {
+            key: "child".into(),
+            model: Arc::new(child),
+            hidden: false,
+        },
+    ];
+    let assembly = assembly::assemble(&robot, &models).unwrap();
+    let native = Quat::from_xyzw(
+        -f32::from_bits(0xbf2cbcb1),
+        -f32::from_bits(0x3f164d52),
+        f32::from_bits(0xbdfc46fc),
+        f32::from_bits(0xbedc1db5),
+    );
+    let actual = assembly.parts[2].transform;
+    let expected = Mat4::from_quat(native);
+    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+        assert!(
+            actual
+                .transform_vector3(axis)
+                .abs_diff_eq(expected.transform_vector3(axis), 0.000002)
+        );
+    }
+    assert!(
+        actual
+            .transform_point3(own_anchor)
+            .abs_diff_eq(Vec3::new(1.0, 2.0, -3.0), 0.000002)
+    );
+}
+
+#[test]
+fn cfz_roundtrip_bounds_and_case_insensitive_keys() {
+    fn block(data: &[u8]) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(vec![], flate2::Compression::default());
+        encoder.write_all(data).unwrap();
+        let raw = encoder.finish().unwrap();
+        let mut out = ((raw.len() + 6) as u32).to_le_bytes().to_vec();
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend([0x78, 0x9c]);
+        out.extend(raw);
+        out
+    }
+    let text = b"dir = wheel1\nmodel = wheel1.gmf\nbase = Wheel\n";
+    let entry = block(text);
+    let name = b"Components\\wheel.txt";
+    let mut dir = (text.len() as u32).to_le_bytes().to_vec();
+    dir.extend(12u32.to_le_bytes());
+    dir.extend(1u32.to_le_bytes());
+    dir.extend((name.len() as u16).to_le_bytes());
+    dir.extend(name);
+    let mut bytes = b"CFL3".to_vec();
+    bytes.extend(((12 + entry.len()) as u32).to_le_bytes());
+    bytes.extend((dir.len() as u32).to_le_bytes());
+    bytes.extend(entry);
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(block(&dir));
+    let catalog = ComponentCatalog::from_cfz(&bytes).unwrap();
+    assert_eq!(
+        catalog
+            .get("COMPONENTS/wheel.txt")
+            .unwrap()
+            .model_path()
+            .unwrap(),
+        "Components/wheel1/wheel1.gmf"
+    );
+    for end in 0..bytes.len() {
+        assert!(ComponentCatalog::from_cfz(&bytes[..end]).is_err());
+    }
+}

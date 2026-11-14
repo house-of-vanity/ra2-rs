@@ -1,0 +1,46 @@
+[package]
+name = "physics-demo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[workspace]
+members = ["crates/arena-core", "crates/ra2-formats", "crates/arena-runtime"]
+resolver = "3"
+
+[workspace.dependencies]
+glam = "=0.33.12"
+serde = { version = "=1.0.229", features = ["derive"] }
+ron = "=0.12.2"
+flate2 = "=1.1.10"
+bevy = { version = "=0.20.0", default-features = false, features = [
+    "std", "async_executor", "multi_threaded", "keyboard", "mouse", "bevy_audio", "mp3",
+    "bevy_asset", "bevy_camera", "bevy_color", "bevy_core_pipeline",
+    "bevy_image", "bevy_light", "bevy_log", "bevy_material", "bevy_mesh",
+    "bevy_pbr", "bevy_render", "bevy_shader", "bevy_window", "bevy_winit",
+    "wayland", "x11", "bevy_ui", "bevy_ui_render", "bevy_ui_widgets", "ui_picking", "bevy_text", "default_font", "png", "bmp", "tga",
+] }
+bevy_rapier3d = { version = "=0.37.0", default-features = false, features = ["dim3", "parallel", "profiler", "fem"] }
+arena-core = { path = "crates/arena-core" }
+ra2-formats = { path = "crates/ra2-formats" }
+arena-runtime = { path = "crates/arena-runtime" }
+
+[dependencies]
+bevy.workspace = true
+bevy_rapier3d.workspace = true
+arena-core.workspace = true
+ra2-formats.workspace = true
+arena-runtime.workspace = true
+serde.workspace = true
+ron.workspace = true
+
+[profile.dev]
+opt-level = 1
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The release executable contains all engine-side defaults and needs no sidecars.
+[profile.release]
+strip = "symbols"
