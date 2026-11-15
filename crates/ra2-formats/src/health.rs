@@ -101,3 +101,62 @@ mod tests {
         assert!((build(&r, &defs).unwrap().parts[0].maximum - before * 2.).abs() <= 1.);
     }
 }
+
+/// Contact response parameters are read from native CFZ/style definitions, not BOT names.
+pub fn contact_profile(
+    definition: &ComponentDefinition,
+    material_name: &str,
+) -> arena_core::health::ContactProfile {
+    use arena_core::health::{ContactMaterial as M, ContactProfile};
+    let base = definition.value("base").to_ascii_lowercase();
+    let explicit = definition.value("material");
+    let name = if explicit.is_empty() {
+        material_name
+    } else {
+        explicit
+    }
+    .trim()
+    .to_ascii_lowercase();
+    let material = match name.as_str() {
+        "arenium" => M::Arenium,
+        "rubber" => M::Rubber,
+        "metal" => M::Metal,
+        _ if base == "weapon" => M::Weapon,
+        _ if base == "wheel" => M::Rubber,
+        _ => M::Metal,
+    };
+    let number = |key, default| {
+        definition
+            .value(key)
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.)
+            .unwrap_or(default)
+    };
+    ContactProfile {
+        material,
+        concussion: number("concussion", 1.),
+        piercing: number("piercing", 0.),
+    }
+}
+
+#[cfg(test)]
+mod contact_tests {
+    use super::*;
+    use arena_core::health::ContactMaterial;
+    #[test]
+    fn native_spike_parameters_are_not_replaced_by_default_concussion() {
+        let spike = contact_profile(
+            &ComponentDefinition::parse("base=Weapon\nconcussion=0\npiercing=1"),
+            "Material #12",
+        );
+        assert_eq!((spike.concussion, spike.piercing), (0., 1.));
+        assert_eq!(spike.material, ContactMaterial::Weapon);
+        let ordinary = contact_profile(&ComponentDefinition::parse(""), "");
+        assert_eq!((ordinary.concussion, ordinary.piercing), (1., 0.));
+        assert_eq!(
+            contact_profile(&ComponentDefinition::parse("base=Wheel"), "").material,
+            ContactMaterial::Rubber
+        );
+    }
+}

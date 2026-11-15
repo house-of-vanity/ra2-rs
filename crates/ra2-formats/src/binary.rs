@@ -655,3 +655,24 @@ pub fn decode(bytes: &[u8]) -> Result<ImportedModel> {
         report: r.report,
     })
 }
+
+pub(crate) fn angular_dashpots(report: &ImportReport) -> Result<Vec<crate::scene::AngularDashpot>> {
+    let mut out = vec![];
+    for extension in report.extensions.iter().filter(|e| e.node_type == 49) {
+        let mut reader = Reader {
+            bytes: &extension.bytes,
+            pos: 0,
+            context: "angular dashpot".into(),
+            report: ImportReport::default(),
+        };
+        reader.chunk(49)?;
+        reader.string()?;
+        reader.tm()?;
+        out.push(crate::scene::AngularDashpot {
+            bodies: [reader.string()?, reader.string()?],
+            strength: reader.f32()?,
+            damping: reader.f32()?,
+        });
+    }
+    Ok(out)
+}

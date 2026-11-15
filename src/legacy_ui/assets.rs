@@ -46,7 +46,7 @@ impl LegacyAssets {
     pub fn load(root: &Path) -> Result<Self, String> {
         let mut this = Self::default();
         let mut files = vec![];
-        crate::fleet::scan(&root.join("UI"), &mut files)?;
+        crate::content::scan(&root.join("UI"), &mut files)?;
         for path in files {
             let key = normalize(
                 &path

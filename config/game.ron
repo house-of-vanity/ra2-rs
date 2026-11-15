@@ -1,0 +1,15 @@
+(
+    version: 1,
+    garage: (
+        motor_force_scale: 40.0,
+        motor_damping: 20.0,
+        servo_stiffness: 400.0,
+        servo_damping: 35.0,
+        strike_speed_scale: 1.35,
+        strike_force_scale: 1.6,
+        // Native linear impact strength, calibrated for Rapier world units.
+        impact_damage_scale: 0.25,
+        wheel_drive_acceleration: 8.0,
+        wheel_motor_damping: 100.0,
+    ),
+)

@@ -138,6 +138,32 @@ static void probe_impacts(void) {
         puts("IMPACT "); vec(cases[k],5); vec(&result,1);
     }
 }
+/* Only type lookup and the empty scene/decal registry are stand-ins. Original
+ * 489470 and 45a5a0 execute all material and impact arithmetic unchanged. */
+static u32 material_vtable[4], own_material[4], other_material[4], scene_owner[128];
+static u32 THISCALL material_type(void *self) { return ((u32 *)self)[2]; }
+static u32 THISCALL type_id(void *self) { return (u32)self == 0x715dc8 ? 2 : 1; }
+static void *scene(void) { return scene_owner; }
+static void probe_materials(void) {
+    patch(0x4cfdf0,type_id);patch(0x401dc0,scene);patch(0x46c020,master);
+    material_vtable[2]=(u32)material_type;
+    own_material[0]=other_material[0]=(u32)material_vtable;
+    ((float *)own_material)[1]=((float *)other_material)[1]=0.1f;
+    static u32 source[128], other[128], record[16], objects[2][16], bodies[2][128];
+    source[0x64/4]=(u32)own_material;other[0x64/4]=(u32)other_material;
+    for (int i=0;i<2;i++) objects[i][0x1c/4]=(u32)bodies[i];
+    record[0x24/4]=(u32)objects[0];record[0x28/4]=(u32)objects[1];
+    ((unsigned char *)record)[0x35]=1;
+    ((float *)record)[0]=8;((float *)record)[0x2c/4]=400;((float *)record)[0x30/4]=400;
+    float cases[][4]={{0,1,3,0},{1,0,3,0},{1,1,3,0},{0,1,2,1},{1,0,3,2},{0,1,0,0}};
+    typedef float THISCALL (*calculate_fn)(void *,void *,void *);
+    for (int i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+        ((float *)source)[0x68/4]=cases[i][0];((float *)source)[0x6c/4]=cases[i][1];
+        own_material[2]=(u32)cases[i][2];other_material[2]=(u32)cases[i][3];
+        float result=((calculate_fn)0x489470)(source,other,record);
+        puts("MATERIAL ");vec(cases[i],4);vec(&result,1);
+    }
+}
 void probe_main(void) {
     puts("MATH START\n");
     /* Select the executable's own scalar D3DX dispatch table. This avoids
@@ -172,5 +198,6 @@ void probe_main(void) {
     puts("MOUNT SOCKET\n"); vec(target_q, 4);
     probe_hinges();
     probe_impacts();
+    probe_materials();
     puts("MATH END\n");
 }

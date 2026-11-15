@@ -114,3 +114,14 @@ mod tests {
         assert!(display_groups(&source).is_err());
     }
 }
+
+/// Native angular dashpots, retained in the import report until a physics scene needs them.
+#[derive(Clone, Debug)]
+pub struct AngularDashpot {
+    pub bodies: [String; 2],
+    pub strength: f32,
+    pub damping: f32,
+}
+pub fn angular_dashpots(report: &crate::ImportReport) -> Result<Vec<AngularDashpot>, String> {
+    crate::binary::angular_dashpots(report)
+}

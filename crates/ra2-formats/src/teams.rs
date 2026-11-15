@@ -205,3 +205,36 @@ mod tests {
         );
     }
 }
+
+/// Stock AI/Teams.txt uses indexed records instead of the user's active-list header.
+pub fn decode_opponents(bytes: &[u8]) -> Vec<(usize, Team)> {
+    let lines = bytes
+        .split(|&b| b == b'\n')
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l).to_vec())
+        .collect::<Vec<_>>();
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            String::from_utf8_lossy(l)
+                .strip_prefix("index ")
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .map(|id| (i, id))
+        })
+        .collect::<Vec<_>>();
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(n, (start, id))| {
+            let end = starts.get(n + 1).map_or(lines.len(), |p| p.0);
+            (end - start >= 5).then(|| {
+                (
+                    *id,
+                    Team {
+                        lines: lines[start + 1..end].to_vec(),
+                    },
+                )
+            })
+        })
+        .collect()
+}

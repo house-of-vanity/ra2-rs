@@ -89,7 +89,7 @@ fn setup(mut commands: Commands, options: Res<Options>, mut assets: ResMut<Legac
         ),
     };
     let mut logos = vec![];
-    let _ = crate::fleet::scan(&options.game_dir.join("Teams"), &mut logos);
+    let _ = crate::content::scan(&options.game_dir.join("Teams"), &mut logos);
     for path in logos
         .into_iter()
         .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("bmp")))
@@ -675,7 +675,7 @@ fn sync(
             }
             Dialog::Import => {
                 let mut files = vec![];
-                let _ = crate::fleet::scan(&hq.root.join("Robot Designs"), &mut files);
+                let _ = crate::content::scan(&hq.root.join("Robot Designs"), &mut files);
                 let cells: Vec<_> = files
                     .iter()
                     .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("bot")))
@@ -812,7 +812,6 @@ mod tests {
         let mut nav = Navigation {
             page: Page::TeamSelect,
             back: Page::Main,
-            started: false,
         };
         let mut hq = Headquarters {
             root: root.clone(),

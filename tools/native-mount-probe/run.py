@@ -80,6 +80,9 @@ def run():
                     "43480000", "42a00000", "41f62763", "41029cbc", "41c80000"]
         if impacts != expected:
             raise RuntimeError(f"native impact results differ from fixtures: {impacts}")
+        materials = re.findall(r"MATERIAL [^\n]+\n([0-9a-f]{8})", output)
+        if materials != ["41a00000","41000000","41e00000","00000000","00000000","41a00000"]:
+            raise RuntimeError(f"native material responses differ from fixtures: {materials}")
         print(f"EXE SHA-256: {EXPECTED_SHA256}\n{output}")
 
 

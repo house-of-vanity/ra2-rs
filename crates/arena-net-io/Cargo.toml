@@ -1,0 +1,21 @@
+[package]
+name = "arena-net-io"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+real-sockets = []
+
+[dependencies]
+arena-net = { path = "../arena-net" }
+lightyear_transport = "=0.31.0"
+lightyear_core = "=0.31.0"
+lightyear_link = "=0.31.0"
+bevy_app = { version = "=0.20.0", default-features = false, features = ["std"] }
+bevy_ecs = { version = "=0.20.0", default-features = false, features = ["std"] }
+bevy_time = { version = "=0.20.0", default-features = false, features = ["std"] }
+bytes = "1"
+blake3 = "=1.8.7"
+
+[dev-dependencies]
+blake3 = "=1.8.7"

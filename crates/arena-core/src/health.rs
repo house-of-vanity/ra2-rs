@@ -42,6 +42,7 @@ pub struct DamageNumber {
     pub amount: f32,
     pub position: Vec3,
     pub age: f32,
+    pub source: Option<u32>,
 }
 #[derive(Default, Debug)]
 pub struct Health {
@@ -51,6 +52,15 @@ pub struct Health {
 }
 impl Health {
     pub fn apply(&mut self, component: usize, amount: f32, position: Vec3) -> Option<DamageEvent> {
+        self.apply_from(component, amount, position, None)
+    }
+    pub fn apply_from(
+        &mut self,
+        component: usize,
+        amount: f32,
+        position: Vec3,
+        source: Option<u32>,
+    ) -> Option<DamageEvent> {
         let part = self.parts.get_mut(component)?;
         if !part.damageable
             || !part.alive()
@@ -70,12 +80,9 @@ impl Health {
         };
         self.received += amount;
         // Native 0x417940: merge within 0.15 s and squared distance < 2.
-        if let Some(n) = self
-            .numbers
-            .iter_mut()
-            .rev()
-            .find(|n| n.age < 0.15 && n.position.distance_squared(position) < 2.)
-        {
+        if let Some(n) = self.numbers.iter_mut().rev().find(|n| {
+            n.source == source && n.age < 0.15 && n.position.distance_squared(position) < 2.
+        }) {
             n.amount += amount;
         } else {
             // Fixed upper bound, even when many fragments hit at once.
@@ -86,6 +93,7 @@ impl Health {
                 amount,
                 position,
                 age: 0.,
+                source,
             });
         }
         Some(event)
@@ -172,9 +180,46 @@ pub fn impact_damage(closing_speed: f32, inverse_effective_mass: f32, scale: f32
     if amount > 0.5 { amount } else { 0. }
 }
 
+/// Rapier reports one reciprocal mechanical contact, not two independent
+/// attacks. A striking tool receives concussion from the target's own closing
+/// motion, not a duplicate of the motion its motor supplied. Scenery and other
+/// weapons retain their full response (including stationary spikes/blades).
+/// This is a gameplay adaptation, not recovered Havok arithmetic.
+pub fn weapon_recoil_fraction(
+    recipient_tool: bool,
+    source_robot: bool,
+    source_tool: bool,
+    source_closing_speed: f32,
+    relative_closing_speed: f32,
+) -> f32 {
+    if !recipient_tool || !source_robot || source_tool {
+        return 1.;
+    }
+    if !source_closing_speed.is_finite()
+        || !relative_closing_speed.is_finite()
+        || source_closing_speed <= 0.25
+        || relative_closing_speed <= 0.
+    {
+        return 0.;
+    }
+    (source_closing_speed / relative_closing_speed).clamp(0., 1.)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tool_recoil_is_not_a_mirrored_attack_or_invulnerability() {
+        // Hammer/piston into passive armor; exchanging the roles is symmetric.
+        assert_eq!(weapon_recoil_fraction(true, true, false, 0., 8.), 0.);
+        assert_eq!(weapon_recoil_fraction(true, true, false, -8., 8.), 0.);
+        assert_eq!(weapon_recoil_fraction(true, true, false, 8., 8.), 1.);
+        assert_eq!(weapon_recoil_fraction(true, true, false, 4., 12.), 1. / 3.);
+        // Weapon counters, passive blades, walls and body rams still hurt.
+        assert_eq!(weapon_recoil_fraction(true, true, true, 0., 8.), 1.);
+        assert_eq!(weapon_recoil_fraction(true, false, false, 0., 8.), 1.);
+        assert_eq!(weapon_recoil_fraction(false, true, false, 0., 8.), 1.);
+    }
     #[test]
     fn hp_is_absolute_capped_and_non_damageable_parts_ignore_impacts() {
         let mut h = Health {
@@ -207,6 +252,19 @@ mod tests {
         assert_eq!(h.numbers.len(), 3);
         h.advance(2.2);
         assert!(h.numbers.is_empty());
+    }
+    #[test]
+    fn damage_numbers_keep_attackers_separate_when_grouping() {
+        let mut h = Health {
+            parts: vec![PartHealth::new(100., true)],
+            ..Default::default()
+        };
+        h.apply_from(0, 10., Vec3::ZERO, Some(1));
+        h.apply_from(0, 5., Vec3::ZERO, None);
+        h.apply_from(0, 4., Vec3::ZERO, Some(1));
+        assert_eq!(h.numbers.len(), 2);
+        assert_eq!(h.numbers[0].amount, 14.);
+        assert_eq!(h.numbers[0].source, Some(1));
     }
     #[test]
     fn a_mount_break_keeps_child_hp_and_intact_assembly_connections() {
@@ -280,5 +338,107 @@ mod tests {
         assert_eq!(impact_damage(0.1, 1. / 500., 0.08), 0.);
         assert_eq!(impact_damage(2., 0., 0.08), 0.);
         assert!(impact_damage(4., 0.09, 0.25) > impact_damage(2., 0.09, 0.25));
+    }
+}
+
+/// Native contact material IDs (registration at 488dd0..489024).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContactMaterial {
+    #[default]
+    Metal,
+    Rubber,
+    Arenium,
+    Weapon,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ContactProfile {
+    pub material: ContactMaterial,
+    pub concussion: f32,
+    pub piercing: f32,
+}
+impl Default for ContactProfile {
+    fn default() -> Self {
+        Self {
+            material: ContactMaterial::Metal,
+            concussion: 1.,
+            piercing: 0.,
+        }
+    }
+}
+impl ContactProfile {
+    /// 489470: this source computes the HP applied to the other component.
+    /// 414e99 computes it; 4176df resolves the target after two stack pushes.
+    /// Equal physical reaction impulses do not imply equal damage amounts.
+    pub fn response(self, other: Self, strength: f32, speed: f32) -> f32 {
+        if other.material == ContactMaterial::Arenium
+            || (self.material == ContactMaterial::Arenium
+                && other.material == ContactMaterial::Rubber)
+        {
+            return 0.;
+        }
+        if !strength.is_finite() || !speed.is_finite() {
+            return 0.;
+        }
+        let coefficient = if self.material == ContactMaterial::Arenium {
+            0.5
+        } else {
+            0.1
+        };
+        (strength.max(0.) * self.concussion + speed.max(0.) * 10. * self.piercing) * coefficient
+    }
+}
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+    #[test]
+    fn material_response_matches_original_executable_fixtures() {
+        // Original 489470 in the QEMU audit, same contact: speed 8, strength 200.
+        for (piercing, concussion, material, other, expected) in [
+            (
+                0.,
+                1.,
+                ContactMaterial::Weapon,
+                ContactMaterial::Metal,
+                0x41a00000,
+            ),
+            (
+                1.,
+                0.,
+                ContactMaterial::Weapon,
+                ContactMaterial::Metal,
+                0x41000000,
+            ),
+            (
+                1.,
+                1.,
+                ContactMaterial::Weapon,
+                ContactMaterial::Metal,
+                0x41e00000,
+            ),
+            (0., 1., ContactMaterial::Arenium, ContactMaterial::Rubber, 0),
+            (1., 0., ContactMaterial::Weapon, ContactMaterial::Arenium, 0),
+            (
+                0.,
+                1.,
+                ContactMaterial::Metal,
+                ContactMaterial::Metal,
+                0x41a00000,
+            ),
+        ] {
+            let result = ContactProfile {
+                material,
+                piercing,
+                concussion,
+            }
+            .response(
+                ContactProfile {
+                    material: other,
+                    ..Default::default()
+                },
+                200.,
+                8.,
+            );
+            assert_eq!(result, f32::from_bits(expected));
+        }
     }
 }

@@ -35,7 +35,6 @@ pub struct Theme {
 pub struct MenuAssets {
     pub theme: Theme,
     pub images: BTreeMap<String, Handle<Image>>,
-    pub missing: usize,
 }
 
 pub fn load(mut commands: Commands, options: Res<Options>, mut images: ResMut<Assets<Image>>) {
@@ -84,6 +83,5 @@ pub fn load(mut commands: Commands, options: Res<Options>, mut images: ResMut<As
     commands.insert_resource(MenuAssets {
         theme,
         images: loaded,
-        missing,
     });
 }

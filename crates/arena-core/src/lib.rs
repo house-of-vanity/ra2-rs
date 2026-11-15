@@ -223,3 +223,4 @@ impl Model {
 }
 
 pub mod health;
+pub mod match_rules;

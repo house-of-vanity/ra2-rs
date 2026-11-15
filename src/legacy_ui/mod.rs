@@ -1,8 +1,10 @@
 //! Runtime for original GIB widgets, original images and original GIFF glyphs.
 pub mod assets;
 pub mod canvas;
+pub(crate) mod floating;
 mod input;
 pub mod layout;
+pub(crate) mod widgets;
 use crate::frontend::{MenuCamera, Navigation};
 use bevy::{
     asset::RenderAssetUsages,
@@ -38,8 +40,11 @@ pub struct Lines {
 pub struct FloatingText {
     pub region: String,
     pub point: Vec2,
+    /// Logical reference pixels; separate opposite damage directions at one contact.
+    pub offset: Vec2,
     pub text: String,
     pub color: [f32; 4],
+    pub diagnostics: bool,
 }
 #[derive(Resource, Default)]
 pub struct State {
@@ -136,7 +141,14 @@ impl Plugin for LegacyUiPlugin {
                     .after(crate::frontend::FrontendSetup),
             )
             .add_systems(Update, input::input.in_set(Input))
-            .add_systems(Update, paint.in_set(Paint));
+            .add_systems(Update, paint.in_set(Paint))
+            .add_systems(Startup, floating::setup.after(setup))
+            .add_systems(
+                Update,
+                floating::paint
+                    .after(crate::gameplay::numbers::project)
+                    .after(Paint),
+            );
     }
 }
 fn setup(
@@ -280,23 +292,6 @@ fn paint(
                     }
                 }
             }
-        }
-    }
-    for label in &state.floating_text {
-        if let Some(region) = frame.regions.get(&label.region)
-            && let Some(font) = assets
-                .fonts
-                .get("fg_d20")
-                .or_else(|| assets.fonts.get("fg_mcn14"))
-        {
-            frame.pixels.text(
-                font,
-                &label.text,
-                region.min + region.size() * label.point,
-                label.color,
-                *region,
-                false,
-            );
         }
     }
     if let Some(mut image) = images.get_mut(&output.image) {

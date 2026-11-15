@@ -131,7 +131,7 @@ impl Plugin for UiSoundPlugin {
             );
     }
 }
-fn setup(
+pub(crate) fn setup(
     options: Res<crate::Options>,
     catalog: Res<crate::editor::catalog::Catalog>,
     mut pcm: ResMut<Assets<Pcm>>,
@@ -152,7 +152,7 @@ fn setup(
             .filter(|s| !s.is_empty()),
     );
     let mut files = Vec::new();
-    let _ = crate::fleet::scan(&options.game_dir.join("Sounds"), &mut files);
+    let _ = crate::content::scan(&options.game_dir.join("Sounds"), &mut files);
     for path in files {
         let key = ra2_formats::components::normalize(
             &path

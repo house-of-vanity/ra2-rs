@@ -25,7 +25,11 @@ pub struct WorkshopCheckPlugin;
 impl Plugin for WorkshopCheckPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup.after(crate::frontend::FrontendSetup))
-            .add_systems(Update, run.after(crate::legacy_ui::Paint));
+            .add_systems(
+                Update,
+                run.after(crate::legacy_ui::Paint)
+                    .after(crate::gameplay::numbers::project),
+            );
     }
 }
 fn setup(

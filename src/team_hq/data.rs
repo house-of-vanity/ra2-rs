@@ -118,28 +118,9 @@ impl NativeData {
         let opponents = std::fs::read(root.join("AI/Teams.txt"))
             .ok()
             .map(|b| {
-                let mut lines: Vec<Vec<u8>> = b
-                    .split(|&b| b == b'\n')
-                    .map(|l| l.strip_suffix(b"\r").unwrap_or(l).to_vec())
-                    .collect();
-                if lines.last().is_some_and(Vec::is_empty) {
-                    lines.pop();
-                }
-                let starts: Vec<_> = lines
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, l)| l.starts_with(b"index "))
-                    .map(|(i, _)| i)
-                    .collect();
-                starts
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, &start)| {
-                        let end = starts.get(i + 1).copied().unwrap_or(lines.len());
-                        (end - start >= 24).then(|| Team {
-                            lines: lines[start + 1..end].to_vec(),
-                        })
-                    })
+                ra2_formats::teams::decode_opponents(&b)
+                    .into_iter()
+                    .map(|(_, t)| t)
                     .collect()
             })
             .unwrap_or_default();

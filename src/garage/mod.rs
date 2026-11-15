@@ -1,19 +1,18 @@
 //! Test garage lifecycle. The editable document is copied into an isolated physics world.
-mod damage;
-mod drive;
-mod mass;
-mod spawn;
-mod surface;
+use crate::gameplay::RobotInstance;
+mod environment;
+pub(crate) use crate::gameplay::{RobotBody as GarageBody, spawn};
 #[cfg(test)]
-mod tests;
-mod tyres;
+use crate::gameplay::{damage, drive, tyres};
+#[cfg(test)]
+pub(crate) mod tests;
 use crate::{
     editor::{Editor, Mode},
     frontend::{Navigation, Page},
     legacy_ui::{self, UiEvent},
 };
-use arena_core::mechanism::Command;
-use arena_core::{mechanism::*, robot::RobotDefinition};
+#[cfg(test)]
+use arena_core::mechanism::*;
 use bevy::prelude::Real;
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
@@ -27,23 +26,13 @@ use bevy_rapier3d::prelude::*;
 pub(crate) struct GarageContext;
 #[derive(Component)]
 struct GarageCamera;
-#[derive(Component)]
-struct GarageBody;
 #[derive(Resource)]
-pub struct Garage {
-    tuning: crate::config::GarageConfig,
-    context: Entity,
-    camera: Entity,
+pub(crate) struct Garage {
+    pub(crate) instance: RobotInstance,
+    pub(crate) camera: Entity,
     target: Handle<Image>,
-    pub rig: Option<Rig>,
-    document: Option<RobotDefinition>,
-    bodies: Vec<Entity>,
     obstacles: Vec<Entity>,
     environment: Vec<Entity>,
-    controls: Controls,
-    commands: Vec<Command>,
-    states: Vec<ActuatorState>,
-    active: bool,
     reset: bool,
     obstacle: usize,
     loaded_obstacle: usize,
@@ -51,29 +40,35 @@ pub struct Garage {
     pitch: f32,
     distance: f32,
     hud_time: f64,
-    damage: damage::State,
+}
+impl Garage {
+    /// Render-free owner of an actual robot assembly, used by prediction and headless tests.
+    pub(crate) fn simulation(instance:RobotInstance)->Self {Self{instance,camera:Entity::PLACEHOLDER,target:default(),obstacles:vec![],environment:vec![],reset:false,obstacle:0,loaded_obstacle:0,yaw:0.,pitch:0.,distance:4.,hud_time:0.}}
+}
+impl std::ops::Deref for Garage {
+    type Target = RobotInstance;
+    fn deref(&self) -> &RobotInstance {
+        &self.instance
+    }
+}
+impl std::ops::DerefMut for Garage {
+    fn deref_mut(&mut self) -> &mut RobotInstance {
+        &mut self.instance
+    }
 }
 pub struct GaragePlugin;
 impl Plugin for GaragePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(
-                Update,
-                update.after(legacy_ui::Input).before(crate::editor::Edit),
-            )
-            .add_systems(
-                FixedUpdate,
-                (drive::motors, damage::capture, tyres::contacts)
-                    .chain()
-                    .before(PhysicsSet::SyncBackend),
-            )
-            .add_systems(FixedUpdate, damage::contacts.after(PhysicsSet::Writeback));
+        app.add_systems(Startup, setup).add_systems(
+            Update,
+            update.after(legacy_ui::Input).before(crate::editor::Edit),
+        );
     }
 }
 fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
-    scene: Res<crate::scene::Scene>,
+    config: Res<crate::config::Config>,
 ) {
     let context = commands
         .spawn((
@@ -119,19 +114,11 @@ fn setup(
         RenderLayers::layer(9),
     ));
     commands.insert_resource(Garage {
-        tuning: scene.config.garage.clone(),
-        context,
+        instance: RobotInstance::new(0, context, config.garage.clone()),
         camera,
         target,
-        rig: None,
-        document: None,
-        bodies: vec![],
         obstacles: vec![],
         environment: vec![],
-        controls: Controls::default(),
-        commands: vec![],
-        states: vec![],
-        active: false,
         reset: false,
         obstacle: 0,
         loaded_obstacle: usize::MAX,
@@ -139,7 +126,6 @@ fn setup(
         pitch: 0.45,
         distance: 5.0,
         hud_time: 0.0,
-        damage: damage::State::default(),
     });
 }
 const OBSTACLES: [(&str, &str); 6] = [
@@ -174,6 +160,7 @@ fn update(
 ) {
     let testing =
         editor.mode == Mode::Test && nav.page == Page::Workshop && editor.dialog.is_none();
+    garage.running = testing;
     if let Ok((mut camera, _)) = cameras.get_mut(garage.camera) {
         camera.is_active = testing;
     }
@@ -251,15 +238,18 @@ fn update(
             commands.entity(e).despawn();
         }
         garage.loaded_obstacle = usize::MAX;
-        let result = spawn::robot(
-            &mut commands,
-            &mut garage,
-            &editor.document.robot,
-            &catalog,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-        );
+        let result = environment::start(&catalog).and_then(|placement| {
+            garage.placement = Some(placement);
+            spawn::robot(
+                &mut commands,
+                &mut garage,
+                &editor.document.robot,
+                &catalog,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+            )
+        });
         if let Err(e) = result {
             editor.dialog = Some(crate::editor::Dialog::Message(e));
             editor.mode = Mode::Components;
@@ -267,7 +257,7 @@ fn update(
             return;
         }
         if garage.environment.is_empty() {
-            match spawn::environment(
+            match environment::environment(
                 &mut commands,
                 &garage,
                 &catalog,
@@ -292,7 +282,7 @@ fn update(
         for e in garage.obstacles.drain(..) {
             commands.entity(e).despawn();
         }
-        match spawn::obstacles(
+        match environment::obstacles(
             &mut commands,
             &garage,
             &catalog,
@@ -309,12 +299,12 @@ fn update(
         }
         garage.loaded_obstacle = garage.obstacle;
     }
-    if let Garage {
+    if let RobotInstance {
         document: Some(robot),
         controls,
         commands: previous,
         ..
-    } = &mut *garage
+    } = &mut garage.instance
     {
         let samples = crate::editor::controls::samples(robot, &keys, true);
         let mut next = controls.evaluate(robot, &samples);
@@ -397,36 +387,6 @@ pub fn bind_ui(
                 .unwrap_or_default(),
         );
         ui.values.insert("points".into(), "N/A".into());
-        let projection = bevy::math::proj::perspective(
-            std::f32::consts::FRAC_PI_4,
-            garage.damage.aspect.max(0.1),
-            0.1,
-            100.,
-        );
-        for number in garage
-            .damage
-            .health
-            .numbers
-            .iter()
-            .filter(|n| n.age >= 0.15 && n.amount.round() >= 1.)
-        {
-            let clip = projection
-                * garage.damage.view
-                * (number.position + Vec3::Y * (0.25 + (number.age - 0.15) * 0.3)).extend(1.);
-            if clip.w <= 0. {
-                continue;
-            }
-            let ndc = clip.truncate() / clip.w;
-            if ndc.x.abs() > 1. || ndc.y.abs() > 1. {
-                continue;
-            }
-            ui.floating_text.push(legacy_ui::FloatingText {
-                region: "test arena placeholder".into(),
-                point: Vec2::new(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5),
-                text: format!("{:.0}", number.amount),
-                color: [1., 0.08, 0.02, ((2.15 - number.age) / 0.5).clamp(0., 1.)],
-            });
-        }
         if let Ok(panel) = assets.widget("botlab/testarena.gib") {
             let mut panel = (*panel).clone();
             for (name, fraction, width) in [

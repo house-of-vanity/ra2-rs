@@ -1,0 +1,10 @@
+[package]
+name = "arena-net-lab"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arena-net = { path = "../arena-net" }
+arena-core.workspace = true
+rapier3d = { version = "=0.36.1", default-features = false, features = ["dim3", "f32", "std"] }
+arena-net-io = { path = "../arena-net-io" }

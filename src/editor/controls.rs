@@ -1427,7 +1427,6 @@ mod slot_tests {
             let mut nav = Navigation {
                 page: Page::Workshop,
                 back: Page::TeamHQ,
-                started: false,
             };
             let ui = legacy_ui::State::default();
             let catalog = Catalog::default();
@@ -1508,7 +1507,6 @@ mod slot_tests {
         let mut nav = Navigation {
             page: Page::Workshop,
             back: Page::TeamHQ,
-            started: false,
         };
         dialog_ok(&mut editor, &ui, &catalog, &mut nav).unwrap();
         assert!(editor.document.dirty, "Export marked the native slot saved");

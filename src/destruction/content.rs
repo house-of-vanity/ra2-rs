@@ -42,7 +42,7 @@ impl Content {
     /// Shared native asset loading for both damage laboratories.
     pub fn load_file(root: &Path, selected: Option<&Path>) -> Result<Self, String> {
         let mut files = Vec::new();
-        crate::fleet::scan(root, &mut files)?;
+        crate::content::scan(root, &mut files)?;
         let index: BTreeMap<_, _> = files
             .iter()
             .map(|p| {

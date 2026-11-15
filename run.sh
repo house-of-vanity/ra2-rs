@@ -17,7 +17,7 @@ if [[ ${PHYSICS_DEMO_SHELL:-} == 1 ]]; then
     # Preserve this checkout's developer preferences. The standalone binary
     # uses its embedded configuration and the selected game's .open-arena/.
     exec cargo run --locked "${demo_profile[@]}" -- \
-        --config "$PWD/config/demo.ron" \
+        --config "$PWD/config/game.ron" \
         --settings-file "$PWD/config/user-settings.ron" "$@"
 fi
 # Bash-escape every argument before passing a command to nix-shell.

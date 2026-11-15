@@ -18,7 +18,7 @@ pub struct Catalogue {
 impl Catalogue {
     pub fn scan(root: &Path) -> Result<Self, String> {
         let mut files = Vec::new();
-        crate::fleet::scan(root, &mut files)?;
+        crate::content::scan(root, &mut files)?;
         let mut entries = Vec::new();
         for path in files
             .into_iter()

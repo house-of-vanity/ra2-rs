@@ -34,7 +34,7 @@ pub fn setup(
                 let mut entity = commands.spawn((
                     AudioPlayer::new(handle),
                     PlaybackSettings {
-                        paused: !nav.visible() || workshop != in_workshop,
+                        paused: workshop != in_workshop,
                         volume: Volume::Linear(settings.music_volume as f32 / 100.0),
                         ..PlaybackSettings::LOOP
                     },
@@ -63,7 +63,9 @@ pub fn synchronize(
     let in_workshop =
         nav.page == Page::Workshop || (nav.page == Page::Settings && nav.back == Page::Workshop);
     for (mut sink, workshop) in &mut sinks {
-        let playing = nav.visible() && workshop.is_some() == in_workshop;
+        let in_match = matches!(nav.page, Page::Match | Page::Results | Page::Pause)
+            || (nav.page == Page::Settings && matches!(nav.back, Page::Match | Page::Pause));
+        let playing = !in_match && workshop.is_some() == in_workshop;
         sink.set_volume(Volume::Linear(settings.music_volume as f32 / 100.0));
         if playing && sink.is_paused() {
             sink.play();

@@ -1,33 +1,22 @@
 //! Launch paths depend on the installation, never on the build machine's sources.
-use crate::{MAX_OBJECTS, Options};
+use crate::Options;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
-pub(crate) const USAGE: &str = "Usage: physics-demo [--game-dir PATH] [--menu|--demo|--editor|--damage-demo|--destruction-demo]
+pub(crate) const USAGE: &str =
+    "Usage: physics-demo [--game-dir PATH] [--editor|--damage-demo|--destruction-demo]
 
-Without arguments, open the main menu (DEMO and TEAM HQ / robot workshop).
-Find game files beside this executable or in the current directory.
-Use --game-dir PATH or RA2_GAME_DIR to select another installation.
-Settings: GAME/.open-arena/settings.ron; default configuration is embedded.
-
-Options:
-  --help, -h                 Show this help without loading the game
-  --version                  Show the engine version
-  --settings-file FILE       Override engine preferences location
-  --config FILE              Override embedded scene/physics configuration
-  --editor-file BOT          Open a robot in the workshop
-  --arena combat|lab         Choose the arena
-  --objects 0..10000          Set initial object count
-  --all-bots                 Load all robots on the lab arena
-  --bot-copies 1..16          Robot copies for the lab
-  --bot-physics rigid|off     Lab collision mode
-  --showcase                 Show component previews
-
-Developer checks:
-  --headless-check, --smoke-test, --menu-smoke-test, --editor-smoke-test,
-  --workshop-check, --damage-check, --destruction-check";
+Open the original main menu, Exhibition and TEAM HQ by default.
+Game files are found beside this executable or in the current directory.
+--game-dir PATH / RA2_GAME_DIR selects an installed Robot Arena 2.
+--config FILE overrides embedded game settings; --settings-file FILE overrides preferences.
+--editor-file BOT opens a robot in the workshop.
+--help, --version require no assets.
+Developer checks: --workshop-check, --exhibition-check, --multiplayer-check, --editor-smoke-test,
+--damage-check, --destruction-check, --smoke-test.
+";
 
 struct Locations {
     cwd: PathBuf,
@@ -112,174 +101,71 @@ impl Options {
     pub(crate) fn parse() -> Result<Self, String> {
         Self::parse_from(std::env::args_os().skip(1), &Locations::current()?)
     }
-
     fn parse_from(
         args: impl IntoIterator<Item = OsString>,
         locations: &Locations,
     ) -> Result<Self, String> {
-        let mut options = Self {
-            objects: 0,
-            headless: false,
+        let mut o = Self {
             smoke_test: false,
-            arena: true,
-            showcase: false,
             config: "@embedded".into(),
             game_dir: PathBuf::new(),
-            all_bots: false,
-            bot_copies: 1,
-            bot_physics: true,
-            menu: true,
-            menu_smoke_test: false,
             settings_file: PathBuf::new(),
             editor: false,
             editor_file: None,
             editor_smoke_test: false,
             workshop_check: false,
+            exhibition_check: false,
+            multiplayer_check: false,
             destruction: false,
             destruction_check: false,
             damage_demo: false,
             damage_check: false,
         };
-        let mut explicit_objects = false;
-        let mut explicit_arena = false;
-        let mut explicit_scene = false;
-        let mut explicit_menu = None;
-        let mut explicit_settings = false;
-        let mut explicit_game = false;
-        let mut arguments = args.into_iter();
-        while let Some(argument) = arguments.next() {
-            match argument
-                .to_str()
-                .ok_or("Option names must be valid UTF-8")?
-            {
-                "--destruction-demo" => options.destruction = true,
-                "--damage-demo" => options.damage_demo = true,
-                "--damage-check" => {
-                    options.damage_demo = true;
-                    options.damage_check = true;
-                }
-                "--destruction-check" => {
-                    options.destruction = true;
-                    options.destruction_check = true;
-                }
-                "--workshop-check" => options.workshop_check = true,
-                "--menu" => explicit_menu = Some(true),
-                "--editor" => options.editor = true,
-                "--editor-smoke-test" => {
-                    options.editor = true;
-                    options.editor_smoke_test = true;
-                }
-                "--editor-file" => {
-                    options.editor = true;
-                    options.editor_file = Some(
-                        arguments
-                            .next()
-                            .ok_or("--editor-file needs a BOT path")?
-                            .into(),
-                    );
-                }
-                "--demo" => explicit_menu = Some(false),
-                "--menu-smoke-test" => options.menu_smoke_test = true,
-                "--settings-file" => {
-                    options.settings_file = arguments
-                        .next()
-                        .ok_or("--settings-file needs a path")?
-                        .into();
-                    explicit_settings = true;
-                }
-                "--showcase" => options.showcase = true,
-                "--all-bots" => options.all_bots = true,
-                "--bot-copies" => {
-                    options.all_bots = true;
-                    options.bot_copies = arguments
-                        .next()
-                        .ok_or("--bot-copies needs a number")?
-                        .to_str()
-                        .ok_or("Expected a UTF-8 number")?
-                        .parse()
-                        .map_err(|_| "Invalid copy count")?;
-                    if !(1..=16).contains(&options.bot_copies) {
-                        return Err("--bot-copies expects 1..16".into());
-                    }
-                }
-                "--bot-physics" => {
-                    options.bot_physics = match arguments
-                        .next()
-                        .as_deref()
-                        .and_then(std::ffi::OsStr::to_str)
-                    {
-                        Some("rigid") => true,
-                        Some("off") => false,
-                        _ => return Err("--bot-physics expects rigid or off".into()),
-                    }
-                }
-                "--config" => {
-                    options.config = arguments.next().ok_or("--config needs a path")?.into()
-                }
-                "--headless-check" => options.headless = true,
-                "--smoke-test" => options.smoke_test = true,
-                "--arena" => {
-                    explicit_arena = true;
-                    options.arena = match arguments
-                        .next()
-                        .as_deref()
-                        .and_then(std::ffi::OsStr::to_str)
-                    {
-                        Some("combat") => true,
-                        Some("lab") => false,
-                        _ => return Err("--arena expects combat or lab".into()),
-                    };
-                }
+        let mut game = None;
+        let mut settings = None;
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.to_str().ok_or("Invalid option name")? {
                 "--game-dir" => {
-                    options.game_dir = arguments.next().ok_or("--game-dir needs a path")?.into();
-                    explicit_game = true;
+                    game = Some(PathBuf::from(args.next().ok_or("--game-dir needs a path")?))
                 }
-                "--objects" => {
-                    explicit_objects = true;
-                    options.objects = arguments
-                        .next()
-                        .ok_or("--objects needs a number")?
-                        .to_str()
-                        .ok_or("Expected a UTF-8 number")?
-                        .parse()
-                        .map_err(|_| "Invalid object count")?;
-                    if options.objects > MAX_OBJECTS {
-                        return Err(format!("Maximum object count is {MAX_OBJECTS}"));
-                    }
+                "--config" => o.config = args.next().ok_or("--config needs a path")?.into(),
+                "--settings-file" => {
+                    settings = Some(PathBuf::from(
+                        args.next().ok_or("--settings-file needs a path")?,
+                    ))
                 }
-                _ => return Err(format!("Unknown argument: {}", argument.to_string_lossy())),
+                "--editor" => o.editor = true,
+                "--editor-file" => {
+                    o.editor = true;
+                    o.editor_file =
+                        Some(args.next().ok_or("--editor-file needs a BOT path")?.into());
+                }
+                "--menu" => {}
+                "--workshop-check" => o.workshop_check = true,
+                "--multiplayer-check" => o.multiplayer_check = true,
+                "--exhibition-check" => o.exhibition_check = true,
+                "--editor-smoke-test" => {
+                    o.editor = true;
+                    o.editor_smoke_test = true;
+                }
+                "--smoke-test" => o.smoke_test = true,
+                "--damage-demo" => o.damage_demo = true,
+                "--damage-check" => {
+                    o.damage_demo = true;
+                    o.damage_check = true;
+                }
+                "--destruction-demo" => o.destruction = true,
+                "--destruction-check" => {
+                    o.destruction = true;
+                    o.destruction_check = true;
+                }
+                _ => return Err(format!("Unknown argument: {}", arg.to_string_lossy())),
             }
         }
-        if options.all_bots {
-            if explicit_arena && options.arena {
-                return Err("--all-bots needs the large --arena lab".into());
-            }
-            options.arena = false;
-        }
-        if !options.arena && !explicit_objects && !options.all_bots {
-            options.objects = 256;
-        }
-        explicit_scene |=
-            options.all_bots || explicit_arena || explicit_objects || options.showcase;
-        options.menu = options.menu_smoke_test
-            || explicit_menu.unwrap_or(!explicit_scene && !options.smoke_test && !options.headless);
-        let needs_game = options.arena
-            || options.menu
-            || options.editor
-            || options.showcase
-            || options.all_bots
-            || options.damage_demo
-            || options.destruction;
-        options.game_dir =
-            locations.game_root(explicit_game.then_some(options.game_dir), needs_game)?;
-        if !explicit_settings {
-            options.settings_file = options.game_dir.join(if options.menu_smoke_test {
-                ".open-arena/menu-smoke-settings.ron"
-            } else {
-                ".open-arena/settings.ron"
-            });
-        }
-        Ok(options)
+        o.game_dir = locations.game_root(game, true)?;
+        o.settings_file = settings.unwrap_or_else(|| o.game_dir.join(".open-arena/settings.ron"));
+        Ok(o)
     }
 }
 
@@ -332,7 +218,7 @@ mod tests {
         let mut paths = s.locations();
         paths.executable = Some(game.join("physics-demo"));
         let o = parse(&[], &paths).unwrap();
-        assert!(o.menu && o.arena && !o.editor);
+        assert!(!o.editor && !o.damage_demo);
         assert_eq!(o.game_dir, game);
         assert_eq!(o.config, Path::new("@embedded"));
         assert_eq!(o.settings_file, game.join(".open-arena/settings.ron"));
@@ -347,7 +233,6 @@ mod tests {
         paths.executable = Some(exe_game.join("physics-demo"));
         paths.environment_game = Some(env_game);
         let o = parse(&["--game-dir", "other game"], &paths).unwrap();
-        assert!(o.menu);
         assert_eq!(o.game_dir, chosen);
         assert_eq!(o.settings_file, chosen.join(".open-arena/settings.ron"));
         assert_eq!(o.config, Path::new("@embedded"));
@@ -402,37 +287,30 @@ mod tests {
         assert!(parse(&["--game-dir", "valid"], &paths).is_ok());
     }
     #[test]
-    fn synthetic_headless_lab_needs_no_original_files() {
+    fn obsolete_synthetic_demo_switches_are_rejected() {
         let s = Sandbox::new();
-        let o = parse(
-            &["--headless-check", "--arena", "lab", "--objects", "0"],
-            &s.locations(),
-        )
-        .unwrap();
-        assert!(!o.arena && !o.menu && o.headless);
-        assert_eq!(o.objects, 0);
-        assert_eq!(o.config, Path::new("@embedded"));
+        for flag in [
+            "--demo",
+            "--headless-check",
+            "--all-bots",
+            "--objects",
+            "--arena",
+        ] {
+            assert!(parse(&[flag], &s.locations()).is_err());
+        }
     }
     #[test]
-    fn scene_switches_keep_workshop_and_demo_entry_points() {
+    fn original_workshop_and_damage_lab_entry_points() {
         let s = Sandbox::new();
         let mut paths = s.locations();
         paths.environment_game = Some(s.game("game"));
-        assert!(!parse(&["--demo"], &paths).unwrap().menu);
         assert!(parse(&["--editor"], &paths).unwrap().editor);
         assert!(
             parse(&["--editor-file", "robot name.bot"], &paths)
                 .unwrap()
                 .editor
         );
-        let o = parse(
-            &["--all-bots", "--bot-copies", "2", "--bot-physics", "off"],
-            &paths,
-        )
-        .unwrap();
-        assert!(o.all_bots && !o.arena && !o.menu && !o.bot_physics);
-        assert_eq!(o.bot_copies, 2);
-        assert!(parse(&["--objects", "10001"], &paths).is_err());
+        assert!(parse(&["--damage-demo"], &paths).unwrap().damage_demo);
         assert!(parse(&["--game-dir"], &paths).is_err());
     }
     #[cfg(unix)]

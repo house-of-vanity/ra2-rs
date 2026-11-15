@@ -1,5 +1,5 @@
 use super::{Draft, MenuCamera, Navigation, Page, art::MenuAssets};
-use crate::{Options, settings::EngineSettings};
+use crate::settings::EngineSettings;
 use bevy::{
     picking::hover::Hovered,
     prelude::*,
@@ -39,7 +39,10 @@ pub(super) struct ValueText(Field);
 pub enum Action {
     Placeholder,
     Workshop,
-    Demo,
+    Resume,
+    Exhibition,
+    Multiplayer,
+    HostPause,
     Settings,
     Back,
     Main,
@@ -182,6 +185,10 @@ pub(super) fn setup(mut commands: Commands, assets: Res<MenuAssets>) {
             &entry.caption,
             if entry.caption == "TEAM HQ" {
                 Action::Workshop
+            } else if entry.caption == "MULTIPLAYER" {
+                Action::Multiplayer
+            } else if entry.caption == "EXHIBITION" {
+                Action::Exhibition
             } else {
                 Action::Placeholder
             },
@@ -244,14 +251,6 @@ pub(super) fn setup(mut commands: Commands, assets: Res<MenuAssets>) {
             (x, -31.0, width, 19.0),
         );
     }
-    let demo = button(
-        &mut commands,
-        main,
-        "DEMO",
-        Action::Demo,
-        button_node(130.0, 34.0),
-    );
-    place(&mut commands, demo, Vec2::ONE, (-150.0, -62.0, 130.0, 34.0));
     let status = text(&mut commands, main, "", 12.0, Color::WHITE);
     commands
         .entity(status)
@@ -300,7 +299,7 @@ pub(super) fn setup(mut commands: Commands, assets: Res<MenuAssets>) {
     text(
         &mut commands,
         panel,
-        "Apply changes without restarting the demo.",
+        "Apply changes without restarting the game.",
         14.0,
         Color::srgb(0.7, 0.76, 0.8),
     );
@@ -422,7 +421,8 @@ pub(super) fn setup(mut commands: Commands, assets: Res<MenuAssets>) {
         .id();
     text(&mut commands, pause_panel, "PAUSED", 28.0, Color::WHITE);
     for (caption, action) in [
-        ("RESUME", Action::Demo),
+        ("RESUME", Action::Resume),
+        ("PAUSE / UNPAUSE MATCH", Action::HostPause),
         ("SETTINGS", Action::Settings),
         ("MAIN MENU", Action::Main),
         ("QUIT", Action::Quit),
@@ -533,9 +533,11 @@ pub(super) fn dispatch(
     match action {
         Action::Placeholder => status.0 = "This game mode is not implemented yet.".into(),
         Action::Workshop => nav.page = Page::TeamSelect,
-        Action::Demo => {
-            nav.started = true;
-            nav.page = Page::Hidden;
+        Action::Exhibition => nav.page = Page::Exhibition,
+        Action::Multiplayer => nav.page = Page::Multiplayer,
+        Action::HostPause => {}
+        Action::Resume => {
+            nav.page = Page::Match;
         }
         Action::Settings => {
             nav.back = nav.page;
@@ -595,11 +597,17 @@ pub(super) fn activate(
     mut applied: ResMut<EngineSettings>,
     mut status: ResMut<Status>,
     mut exit: MessageWriter<crate::shutdown::ExitRequest>,
-    options: Res<Options>,
     mut sounds: ResMut<crate::ui_sound::Sounds>,
+    mut net: ResMut<crate::multiplayer::Multiplayer>,
+    battle: Res<crate::battle::Session>,
 ) {
-    if options.menu_smoke_test {
-        return;
+    if let Ok(Action::HostPause) = actions.get(event.entity)
+        && battle.network
+        && net.host
+    {
+        let tick = net.tick;
+        let paused = !net.paused;
+        net.pause(tick, paused);
     }
     if let Ok(action) = actions.get(event.entity)
         && dispatch(*action, &mut nav, &mut draft, &mut applied, &mut status)
@@ -618,7 +626,18 @@ pub(super) fn refresh(
     mut roots: Query<(&Screen, &mut Node)>,
     mut values: Query<(&ValueText, &mut Text), Without<StatusText>>,
     mut notes: Query<&mut Text, With<StatusText>>,
+    mut host_pause: Query<(&Action, &mut Node), Without<Screen>>,
+    battle: Res<crate::battle::Session>,
 ) {
+    for (action, mut node) in &mut host_pause {
+        if matches!(action, Action::HostPause) {
+            node.display = if battle.network && battle.authority {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        }
+    }
     for (screen, mut node) in &mut roots {
         let visible = if screen.0 == Page::Main {
             nav.page == Page::Main || (nav.page == Page::Settings && nav.back == Page::Main)
@@ -681,7 +700,6 @@ mod tests {
         let mut nav = Navigation {
             page: Page::Main,
             back: Page::Main,
-            started: false,
         };
         let mut applied = EngineSettings::default();
         let mut draft = Draft(applied.clone());
@@ -699,7 +717,6 @@ mod tests {
         let mut nav = Navigation {
             page: Page::Pause,
             back: Page::Main,
-            started: true,
         };
         let mut applied = EngineSettings::default();
         let saved = applied.clone();

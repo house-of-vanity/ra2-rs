@@ -2,7 +2,7 @@ use super::*;
 use arena_core::robot::RobotDefinition;
 use bevy::time::TimeUpdateStrategy;
 use std::{path::Path, time::Duration};
-fn native_garage(path: &str) -> (App, RobotDefinition) {
+pub(crate) fn native_garage(path: &str) -> (App, RobotDefinition) {
     let root = std::env::var_os("RA2_GAME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../RobotArena2"));
@@ -32,7 +32,6 @@ fn native_garage(path: &str) -> (App, RobotDefinition) {
         .insert_resource(Navigation {
             page: Page::Workshop,
             back: Page::Main,
-            started: true,
         })
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<StandardMaterial>>()
@@ -48,19 +47,15 @@ fn native_garage(path: &str) -> (App, RobotDefinition) {
         .id();
     let camera = app.world_mut().spawn_empty().id();
     app.insert_resource(Garage {
-        tuning: crate::config::GarageConfig::default(),
-        context,
+        instance: RobotInstance {
+            active: true,
+            running: true,
+            ..RobotInstance::new(0, context, crate::config::GarageConfig::default())
+        },
         camera,
         target: default(),
-        rig: None,
-        document: None,
-        bodies: vec![],
         obstacles: vec![],
         environment: vec![],
-        controls: Controls::default(),
-        commands: vec![],
-        states: vec![],
-        active: true,
         reset: false,
         obstacle: 0,
         loaded_obstacle: 0,
@@ -68,7 +63,6 @@ fn native_garage(path: &str) -> (App, RobotDefinition) {
         pitch: 0.0,
         distance: 4.0,
         hud_time: 0.0,
-        damage: damage::State::default(),
     });
     app.add_systems(
         Startup,
@@ -79,6 +73,7 @@ fn native_garage(path: &str) -> (App, RobotDefinition) {
          mut meshes: ResMut<Assets<Mesh>>,
          mut materials: ResMut<Assets<StandardMaterial>>,
          mut images: ResMut<Assets<Image>>| {
+            garage.placement = Some(environment::start(&catalog).unwrap());
             spawn::robot(
                 &mut commands,
                 &mut garage,
@@ -89,7 +84,7 @@ fn native_garage(path: &str) -> (App, RobotDefinition) {
                 &mut images,
             )
             .unwrap();
-            garage.environment = spawn::environment(
+            garage.environment = environment::environment(
                 &mut commands,
                 &garage,
                 &catalog,
@@ -1887,4 +1882,367 @@ fn wheel_rotation_matches_travel_in_reverse_and_tank_turns() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "requires user's native TEST_BOT; read only"]
+fn piston_spikes_damage_afk_hull_without_taxing_attacker_hull() {
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, robot) = native_garage("Teams/Team1/Bot0.bot");
+    let saved = ra2_formats::bot::encode(&robot).unwrap();
+    assert!(robot.name.eq_ignore_ascii_case("TEST_BOT"));
+    app.update();
+    let (context, ground, environment) = {
+        let g = app.world().resource::<Garage>();
+        (g.context, g.placement.unwrap(), g.environment.clone())
+    };
+    for entity in environment {
+        app.world_mut().despawn(entity);
+    }
+    app.world_mut().spawn((
+        RigidBody::Fixed,
+        Collider::cuboid(100., 0.5, 100.),
+        Transform::from_xyz(0., ground.translation.y - 0.5, 0.),
+        Friction::coefficient(0.5),
+        CollisionGroups::new(Group::GROUP_1, Group::ALL),
+        RapierContextEntityLink(context),
+    ));
+    for _ in 0..180 {
+        app.update();
+    }
+    let (parent, child, stop) = {
+        let g = app.world().resource::<Garage>();
+        let rig = g.rig.as_ref().unwrap();
+        let j = rig
+            .joints
+            .iter()
+            .find(|j| {
+                j.kind == ActuatorKind::BurstPiston
+                    && g.damage.bodies[j.child]
+                        .solids
+                        .iter()
+                        .any(|s| s.profile.piercing > 0.)
+            })
+            .expect("Native piston has no piercing output");
+        (g.bodies[j.parent], g.bodies[j.child], j.stop)
+    };
+    let joint = app.world().get::<ImpulseJoint>(child).unwrap();
+    let direction = app.world().get::<Transform>(parent).unwrap().rotation
+        * joint.data.as_ref().local_basis1()
+        * Vec3::X
+        * stop.signum();
+    let direction = Vec3::new(direction.x, 0., direction.z).normalize();
+    let target = robot.clone();
+    let mut placement = ground;
+    placement.translation += direction * 8.;
+    let opponent = app
+        .world_mut()
+        .run_system_once(
+            move |mut commands: Commands,
+                  catalog: Res<crate::editor::catalog::Catalog>,
+                  mut meshes: ResMut<Assets<Mesh>>,
+                  mut materials: ResMut<Assets<StandardMaterial>>,
+                  mut images: ResMut<Assets<Image>>| {
+                let mut r = RobotInstance::new(1, context, default());
+                r.group = Group::GROUP_3;
+                r.placement = Some(placement);
+                spawn::robot(
+                    &mut commands,
+                    &mut r,
+                    &target,
+                    &catalog,
+                    &mut meshes,
+                    &mut materials,
+                    &mut images,
+                )
+                .unwrap();
+                r.active = true;
+                r.running = true;
+                r
+            },
+        )
+        .unwrap();
+    app.insert_resource(crate::battle::Session {
+        robots: vec![opponent],
+        ..default()
+    });
+    for _ in 0..180 {
+        app.update();
+    }
+    let (tip, centre) = {
+        let g = app.world().resource::<Garage>();
+        let mut end = f32::NEG_INFINITY;
+        let mut centre = Vec3::ZERO;
+        let mut count = 0.;
+        for (body, parts) in g.bodies.iter().zip(&g.damage.bodies) {
+            let pose = app.world().get::<Transform>(*body).unwrap();
+            for s in parts.solids.iter().filter(|s| s.profile.piercing > 0.) {
+                let world =
+                    pose.to_matrix() * Mat4::from_rotation_translation(s.rotation, s.position);
+                let aabb =
+                    s.collider
+                        .raw
+                        .compute_aabb(&bevy_rapier3d::rapier::math::Pose::from_parts(
+                            world.w_axis.truncate(),
+                            Quat::from_mat4(&world),
+                        ));
+                let c = (aabb.mins + aabb.maxs) * 0.5;
+                let half = (aabb.maxs - aabb.mins) * 0.5;
+                end = end.max(c.dot(direction) + half.dot(direction.abs()));
+                centre += c;
+                count += 1.;
+            }
+        }
+        (end, centre / count)
+    };
+    let (bodies, shift) = {
+        let r = &app.world().resource::<crate::battle::Session>().robots[0];
+        let root = app.world().get::<Transform>(r.bodies[0]).unwrap();
+        let hull = r.damage.bodies[0]
+            .solids
+            .iter()
+            .find(|s| s.component == 0)
+            .unwrap();
+        let world =
+            root.to_matrix() * Mat4::from_rotation_translation(hull.rotation, hull.position);
+        let aabb = hull
+            .collider
+            .raw
+            .compute_aabb(&bevy_rapier3d::rapier::math::Pose::from_parts(
+                world.w_axis.truncate(),
+                Quat::from_mat4(&world),
+            ));
+        let c = (aabb.mins + aabb.maxs) * 0.5;
+        let half = (aabb.maxs - aabb.mins) * 0.5;
+        let near = c.dot(direction) - half.dot(direction.abs());
+        let delta = centre - c;
+        let lateral = delta - direction * delta.dot(direction);
+        (
+            r.bodies.clone(),
+            Vec3::new(lateral.x, 0., lateral.z) + direction * (tip + 0.18 - near),
+        )
+    };
+    for body in bodies {
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation += shift;
+        *app.world_mut().get_mut::<Velocity>(body).unwrap() = Velocity::zero();
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    let snapshots = app
+        .world()
+        .resource::<Garage>()
+        .bodies
+        .iter()
+        .chain(&app.world().resource::<crate::battle::Session>().robots[0].bodies)
+        .map(|e| (*e, *app.world().get::<Transform>(*e).unwrap()))
+        .collect::<Vec<_>>();
+    let before = [
+        app.world().resource::<Garage>().damage.health.parts[0].current,
+        app.world().resource::<crate::battle::Session>().robots[0]
+            .damage
+            .health
+            .parts[0]
+            .current,
+    ];
+    let mut tagged = false;
+    for _ in 0..3 {
+        press_native_keys(&mut app, &robot, &[]);
+        for (e, t) in &snapshots {
+            *app.world_mut().get_mut::<Transform>(*e).unwrap() = *t;
+            *app.world_mut().get_mut::<Velocity>(*e).unwrap() = Velocity::zero();
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+        press_native_keys(&mut app, &robot, &[57]);
+        for _ in 0..150 {
+            app.update();
+            tagged |= app.world().resource::<crate::battle::Session>().robots[0]
+                .damage
+                .health
+                .numbers
+                .iter()
+                .any(|n| n.source == Some(0));
+        }
+        press_native_keys(&mut app, &robot, &[]);
+        for _ in 0..120 {
+            app.update();
+        }
+    }
+    let own = &app.world().resource::<Garage>().damage.health;
+    let other = &app.world().resource::<crate::battle::Session>().robots[0]
+        .damage
+        .health;
+    let loss = [
+        before[0] - own.parts[0].current,
+        before[1] - other.parts[0].current,
+    ];
+    println!(
+        "TEST_BOT 3 native space-button strokes: hull loss attacker={} AFK={}, all-part HP {} vs {}, source-tagged={tagged}",
+        loss[0], loss[1], own.received, other.received
+    );
+    assert!(loss[1] > 5., "Piston spikes did not damage AFK hull");
+    assert!(
+        loss[0] < loss[1] * 0.1 + 0.5,
+        "Attacker hull still taxed for weapon contact: {loss:?}"
+    );
+    assert!(tagged, "Hit lost its source for green damage feedback");
+    assert!(
+        own.received < other.received * 0.5,
+        "Total weapon/attachment HP still mirrors target HP: {} vs {}",
+        own.received,
+        other.received
+    );
+    assert_eq!(
+        ra2_formats::bot::encode(&app.world().resource::<Editor>().document.robot).unwrap(),
+        saved
+    );
+}
+
+#[test]
+#[ignore = "requires native CRUSH and Stingray models; read only"]
+fn crush_hammer_contact_does_not_mirror_hp_into_the_tool() {
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _) = native_garage("Teams/Team0/Bot0.bot");
+    app.update();
+    let (context, mut placement, root) = {
+        let g = app.world().resource::<Garage>();
+        (g.context, g.placement.unwrap(), g.bodies[0])
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../RobotArena2/Teams/Team0/Bot1.bot");
+    let target = ra2_formats::bot::decode(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(target.name.to_ascii_lowercase(), "sting ray");
+    placement.translation.x += 8.;
+    let opponent = app
+        .world_mut()
+        .run_system_once(
+            move |mut commands: Commands,
+                  catalog: Res<crate::editor::catalog::Catalog>,
+                  mut meshes: ResMut<Assets<Mesh>>,
+                  mut materials: ResMut<Assets<StandardMaterial>>,
+                  mut images: ResMut<Assets<Image>>| {
+                let mut r = RobotInstance::new(1, context, default());
+                r.group = Group::GROUP_3;
+                r.placement = Some(placement);
+                spawn::robot(
+                    &mut commands,
+                    &mut r,
+                    &target,
+                    &catalog,
+                    &mut meshes,
+                    &mut materials,
+                    &mut images,
+                )
+                .unwrap();
+                r.active = true;
+                r.running = true;
+                r
+            },
+        )
+        .unwrap();
+    app.insert_resource(crate::battle::Session {
+        robots: vec![opponent],
+        ..default()
+    });
+    for _ in 0..180 {
+        app.update();
+    }
+    // Real native compound shapes and HP, aligned for an isolated head strike.
+    // Inject velocity, never HP: this exercises the full Rapier -> HP path.
+    let bounds = |world: &World, body: Entity, s: &damage::Solid| {
+        let pose = world.get::<Transform>(body).unwrap();
+        let world = pose.to_matrix() * Mat4::from_rotation_translation(s.rotation, s.position);
+        s.collider
+            .raw
+            .compute_aabb(&bevy_rapier3d::rapier::math::Pose::from_parts(
+                world.w_axis.truncate(),
+                Quat::from_mat4(&world),
+            ))
+    };
+    let (head, head_bounds) = {
+        let g = app.world().resource::<Garage>();
+        g.bodies
+            .iter()
+            .zip(&g.damage.bodies)
+            .find_map(|(b, p)| {
+                p.solids
+                    .iter()
+                    .find(|s| s.tool)
+                    .map(|s| (*b, bounds(app.world(), *b, s)))
+            })
+            .expect("CRUSH has no weapon collision")
+    };
+    assert_ne!(head, root);
+    let (others, shift) = {
+        let r = &app.world().resource::<crate::battle::Session>().robots[0];
+        let hull = r.damage.bodies[0]
+            .solids
+            .iter()
+            .find(|s| s.component == 0)
+            .unwrap();
+        let aabb = bounds(app.world(), r.bodies[0], hull);
+        let hc = (head_bounds.mins + head_bounds.maxs) * 0.5;
+        let tc = (aabb.mins + aabb.maxs) * 0.5;
+        (
+            r.bodies.clone(),
+            Vec3::new(
+                head_bounds.maxs.x + 0.002 - aabb.mins.x,
+                hc.y - tc.y,
+                hc.z - tc.z,
+            ),
+        )
+    };
+    for e in others {
+        app.world_mut().get_mut::<Transform>(e).unwrap().translation += shift;
+        *app.world_mut().get_mut::<Velocity>(e).unwrap() = Velocity::zero();
+    }
+    let own = app.world().resource::<Garage>().bodies.clone();
+    for e in own {
+        *app.world_mut().get_mut::<Velocity>(e).unwrap() = Velocity::linear(Vec3::X * 8.);
+    }
+    let before = [
+        app.world().resource::<Garage>().damage.health.received,
+        app.world().resource::<crate::battle::Session>().robots[0]
+            .damage
+            .health
+            .received,
+    ];
+    for _ in 0..12 {
+        app.update();
+        if app.world().resource::<crate::battle::Session>().robots[0]
+            .damage
+            .health
+            .received
+            > before[1]
+        {
+            break;
+        }
+    }
+    let g = app.world().resource::<Garage>();
+    let target = &app.world().resource::<crate::battle::Session>().robots[0];
+    let loss = [
+        g.damage.health.received - before[0],
+        target.damage.health.received - before[1],
+    ];
+    println!(
+        "CRUSH hammer -> passive Stingray: total HP loss attacker={} target={}",
+        loss[0], loss[1]
+    );
+    assert!(loss[1] > 1., "Hammer missed: {loss:?}");
+    assert!(
+        loss[0] < loss[1] * 0.5,
+        "Hammer damage still mirrored: {loss:?}"
+    );
+    assert!(
+        target
+            .damage
+            .health
+            .numbers
+            .iter()
+            .any(|n| n.source == Some(0))
+    );
 }

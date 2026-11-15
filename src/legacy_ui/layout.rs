@@ -605,8 +605,10 @@ impl Layout<'_> {
                 if Some(index) != image_child {
                     continue;
                 }
-            } else if child.value("Visible") == "false"
-                && self.state.visibility.get(child.name()) != Some(&true)
+            } else if std::iter::successors(Some(child), |w| w.wrapped.as_deref())
+                .any(|w| w.value("Visible") == "false")
+                && !std::iter::successors(Some(child), |w| w.wrapped.as_deref())
+                    .any(|w| self.state.visibility.get(w.name()) == Some(&true))
                 && w.kind != "ScrollBar"
             {
                 continue;
@@ -672,15 +674,28 @@ impl Layout<'_> {
                 } else {
                     (if horizontal { r.width() } else { r.height() }) - extent
                 };
+                let cross = effective_bounds(child, r, None);
                 child_forced = Some(if horizontal {
                     Rect::from_corners(
-                        Vec2::new(if index == 0 { r.min.x } else { r.min.x + first }, r.min.y),
-                        Vec2::new(if index == 0 { r.min.x + first } else { r.max.x }, r.max.y),
+                        Vec2::new(
+                            if index == 0 { r.min.x } else { r.min.x + first },
+                            cross.min.y,
+                        ),
+                        Vec2::new(
+                            if index == 0 { r.min.x + first } else { r.max.x },
+                            cross.max.y,
+                        ),
                     )
                 } else {
                     Rect::from_corners(
-                        Vec2::new(r.min.x, if index == 0 { r.min.y } else { r.min.y + first }),
-                        Vec2::new(r.max.x, if index == 0 { r.min.y + first } else { r.max.y }),
+                        Vec2::new(
+                            cross.min.x,
+                            if index == 0 { r.min.y } else { r.min.y + first },
+                        ),
+                        Vec2::new(
+                            cross.max.x,
+                            if index == 0 { r.min.y + first } else { r.max.y },
+                        ),
                     )
                 });
             }

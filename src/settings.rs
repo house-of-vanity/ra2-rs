@@ -110,7 +110,10 @@ pub fn apply(
     store: Res<SettingsStore>,
     mut previous: Local<Option<EngineSettings>>,
     mut windows: Query<&mut Window>,
-    mut cameras: Query<&mut Msaa, With<Camera3d>>,
+    // Bevy keys shared camera buffers by MSAA as well as the output target.
+    // The window's overlay must share the scene's samples: otherwise a
+    // non-clearing UI camera loads its own previous frame instead of the scene.
+    mut cameras: Query<&mut Msaa, Or<(With<Camera3d>, With<crate::frontend::MenuCamera>)>>,
     mut lights: Query<&mut DirectionalLight>,
 ) {
     if previous.as_ref() == Some(&*settings) {

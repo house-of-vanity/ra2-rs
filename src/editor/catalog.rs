@@ -59,7 +59,7 @@ pub struct Catalog {
 impl Catalog {
     pub fn load(root: &Path, ui: &mut LegacyAssets) -> Result<Self, String> {
         let mut files = vec![];
-        crate::fleet::scan(root, &mut files)?;
+        crate::content::scan(root, &mut files)?;
         let index: BTreeMap<_, _> = files
             .iter()
             .map(|p| {
@@ -267,7 +267,7 @@ mod pose_tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../RobotArena2");
         let catalog = Catalog::load(&root, &mut LegacyAssets::default()).unwrap();
         let mut files = vec![];
-        crate::fleet::scan(&root, &mut files).unwrap();
+        crate::content::scan(&root, &mut files).unwrap();
         let mut count = 0;
         for path in files
             .iter()

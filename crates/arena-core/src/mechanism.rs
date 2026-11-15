@@ -84,26 +84,135 @@ pub struct Command {
     pub steer: f32,
     pub fire: bool,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Controls {
     previous: Vec<Vec<f32>>,
     switches: Vec<Vec<f32>>,
     toggles: Vec<bool>,
     binding_previous: Vec<bool>,
 }
+/// Complete state of native switches and per-binding edges for authoritative rollback.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ControlsSnapshot {
+    pub previous: Vec<Vec<f32>>,
+    pub switches: Vec<Vec<f32>>,
+    pub toggles: Vec<bool>,
+    pub binding_previous: Vec<bool>,
+}
+impl ControlsSnapshot {
+    pub fn valid(&self) -> bool {
+        self.previous.len() <= 128
+            && self.previous.len() == self.switches.len()
+            && self
+                .previous
+                .iter()
+                .zip(&self.switches)
+                .all(|(p, s)| p.len() == s.len())
+            && self.previous.iter().map(Vec::len).sum::<usize>() <= 128
+            && self.switches.iter().map(Vec::len).sum::<usize>() <= 128
+            && self.toggles.len() <= 4096
+            && self.binding_previous.len() == self.toggles.len()
+            && self
+                .previous
+                .iter()
+                .chain(&self.switches)
+                .flatten()
+                .all(|v| v.is_finite() && (0. ..=1.).contains(v))
+    }
+}
 impl Controls {
-    /// Samples are indexed by controller, then native input slot. Axis values are 0..1.
-    pub fn evaluate(&mut self, robot: &RobotDefinition, samples: &[Vec<f32>]) -> Vec<Command> {
-        if self.previous.len() != robot.controllers.len() {
+    fn prepare(&mut self, robot: &RobotDefinition) {
+        if self.previous.len() != robot.controllers.len()
+            || self
+                .previous
+                .iter()
+                .zip(&robot.controllers)
+                .any(|(row, c)| row.len() != c.keys.len())
+        {
             self.previous = robot
                 .controllers
                 .iter()
-                .map(|c| vec![0.0; c.keys.len()])
+                .map(|c| vec![0.; c.keys.len()])
                 .collect();
             self.switches = self.previous.clone();
         }
         self.toggles.resize(robot.bindings.len(), false);
         self.binding_previous.resize(robot.bindings.len(), false);
+    }
+    pub fn snapshot(&self) -> ControlsSnapshot {
+        ControlsSnapshot {
+            previous: self.previous.clone(),
+            switches: self.switches.clone(),
+            toggles: self.toggles.clone(),
+            binding_previous: self.binding_previous.clone(),
+        }
+    }
+    pub fn restore(&mut self, s: &ControlsSnapshot) -> Result<(), String> {
+        if !s.valid() {
+            return Err("Invalid native controls checkpoint".into());
+        }
+        self.previous = s.previous.clone();
+        self.switches = s.switches.clone();
+        self.toggles = s.toggles.clone();
+        self.binding_previous = s.binding_previous.clone();
+        Ok(())
+    }
+    /// Preserve lost short presses without evaluating a controller twice. A replay
+    /// restores both this state and the acknowledged edge counters before stepping.
+    pub fn evaluate_wire(
+        &mut self,
+        robot: &RobotDefinition,
+        levels: &[u8],
+        edges: &[u32],
+        seen: &mut Vec<u32>,
+    ) -> Vec<Command> {
+        self.prepare(robot);
+        let mut samples = Vec::with_capacity(robot.controllers.len());
+        let mut flat = 0;
+        seen.resize(robot.controllers.iter().map(|c| c.keys.len()).sum(), 0);
+        for (ci, c) in robot.controllers.iter().enumerate() {
+            let mut row = Vec::with_capacity(c.keys.len());
+            for key in 0..c.keys.len() {
+                let presses = edges
+                    .get(flat)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(seen[flat]);
+                let mut level = levels.get(flat).copied().unwrap_or(0) as f32 / 255.;
+                if presses > 0 {
+                    // evaluate() handles the final edge. Preserve parity of any
+                    // earlier presses whose individual commands were lost.
+                    if c.kind == 2 && presses % 2 == 0 {
+                        self.switches[ci][key] = 1. - self.switches[ci][key];
+                    }
+                    if let Some(previous) = self.previous.get_mut(ci).and_then(|v| v.get_mut(key)) {
+                        *previous = 0.;
+                    }
+                    for (bi, b) in robot.bindings.iter().enumerate() {
+                        if b.controller == c.position
+                            && b.key == key
+                            && let Some(previous) = self.binding_previous.get_mut(bi)
+                        {
+                            *previous = false;
+                            if c.kind != 2 && b.action.starts_with("On/Off") && presses % 2 == 0 {
+                                self.toggles[bi] = !self.toggles[bi];
+                            }
+                        }
+                    }
+                    level = level.max(1.);
+                }
+                seen[flat] = seen[flat].max(edges.get(flat).copied().unwrap_or(0));
+                row.push(level);
+                flat += 1;
+            }
+            samples.push(row);
+        }
+        self.evaluate(robot, &samples)
+    }
+
+    /// Samples are indexed by controller, then native input slot. Axis values are 0..1.
+    pub fn evaluate(&mut self, robot: &RobotDefinition, samples: &[Vec<f32>]) -> Vec<Command> {
+        self.prepare(robot);
         let mut result = vec![Command::default(); robot.components.len()];
         let mut values = self.previous.clone();
         for (i, c) in robot.controllers.iter().enumerate() {
@@ -171,7 +280,7 @@ impl Controls {
         result
     }
 }
-#[derive(Default)]
+#[derive(Default, Clone, Debug, PartialEq)]
 pub struct ActuatorState {
     pub position: f32,
     pub burst_time: f32,
@@ -378,5 +487,62 @@ mod actuator_tests {
         assert_eq!(s.step(&j, Command::default(), 0.01, Some(1.0)).0, Some(0.0));
         s.step(&j, Command::default(), 0.01, Some(0.0));
         assert_eq!(s.burst_time, 0.0);
+    }
+}
+#[cfg(test)]
+mod rollback_controls_tests {
+    use super::*;
+    use crate::robot::{ControlBinding, Controller};
+    #[test]
+    fn switch_state_and_lost_short_presses_survive_restore_without_duplicate_fire() {
+        let mut r = crate::editor::Workshop::new().robot;
+        r.controllers.push(Controller {
+            name: "Switch".into(),
+            position: [0, 0],
+            kind: 2,
+            keys: vec![vec![]],
+        });
+        r.controllers.push(Controller {
+            name: "Burst".into(),
+            position: [1, 0],
+            kind: 1,
+            keys: vec![vec![]],
+        });
+        r.bindings.push(ControlBinding {
+            component: 0,
+            controller: [0, 0],
+            key: 0,
+            action: "Spin Clockwise".into(),
+        });
+        r.bindings.push(ControlBinding {
+            component: 0,
+            controller: [1, 0],
+            key: 0,
+            action: "Fire".into(),
+        });
+        let mut c = Controls::default();
+        let mut edges = vec![];
+        let command = c.evaluate_wire(&r, &[0, 0], &[1, 1], &mut edges)[0];
+        assert_eq!(command.drive, 1.);
+        assert!(command.fire);
+        let checkpoint = c.snapshot();
+        let acknowledged = edges.clone();
+        assert!(!c.evaluate_wire(&r, &[0, 0], &[1, 1], &mut edges)[0].fire);
+        let expected = c.evaluate_wire(&r, &[0, 0], &[2, 2], &mut edges)[0];
+        assert_eq!(expected.drive, 0.);
+        assert!(expected.fire);
+        c.restore(&checkpoint).unwrap();
+        edges = acknowledged;
+        c.evaluate_wire(&r, &[0, 0], &[1, 1], &mut edges);
+        let replay = c.evaluate_wire(&r, &[0, 0], &[2, 2], &mut edges)[0];
+        assert_eq!(replay.drive, expected.drive);
+        assert_eq!(replay.fire, expected.fire);
+        let current = c.evaluate_wire(&r, &[0, 0], &[4, 4], &mut edges)[0];
+        assert_eq!(
+            current.drive, replay.drive,
+            "two missed switch presses must preserve parity"
+        );
+        assert!(current.fire);
+        assert!(!c.evaluate_wire(&r, &[0, 0], &[4, 4], &mut edges)[0].fire);
     }
 }
