@@ -16,6 +16,20 @@ use arena_core::{
 use bevy::prelude::*;
 use std::path::{Path, PathBuf};
 
+const ATTACH_ROTATION_STEP: f32 = std::f32::consts::PI / 12.0;
+
+fn rotate_attach_by_drag(editor: &mut Editor, delta: f32) {
+    editor.attach_rotation_remainder += delta * 0.02;
+    while editor.attach_rotation_remainder >= ATTACH_ROTATION_STEP {
+        editor.attach_angle += ATTACH_ROTATION_STEP;
+        editor.attach_rotation_remainder -= ATTACH_ROTATION_STEP;
+    }
+    while editor.attach_rotation_remainder <= -ATTACH_ROTATION_STEP {
+        editor.attach_angle -= ATTACH_ROTATION_STEP;
+        editor.attach_rotation_remainder += ATTACH_ROTATION_STEP;
+    }
+}
+
 fn select_component(editor: &mut Editor, catalog: &Catalog, key: &str, preserve_socket: bool) {
     editor.component = key.into();
     editor.selected = None;
@@ -26,6 +40,7 @@ fn select_component(editor: &mut Editor, catalog: &Catalog, key: &str, preserve_
     editor.ghost_model = None;
     editor.attach_offset = 0.0;
     editor.attach_angle = 0.0;
+    editor.attach_rotation_remainder = 0.0;
     if let Some(asset) = catalog.components.get(key) {
         let keep = preserve_socket
             && asset
@@ -54,6 +69,19 @@ pub fn rebuild(editor: &mut Editor) -> Result<(), String> {
         chassis::rebuild(&mut robot.chassis)
     })
 }
+
+fn remove_selected(editor: &mut Editor) -> Result<(), String> {
+    editor
+        .document
+        .remove_component(editor.selected.ok_or("Select a component")?)?;
+    editor.selected = None;
+    editor.pending = None;
+    editor.ghost_pick = None;
+    editor.ghost_pose = None;
+    editor.ghost_model = None;
+    Ok(())
+}
+
 pub fn actions(class: &str) -> &'static [&'static str] {
     match class {
         "SpinMotor" | "ServoMotor" => &[
@@ -660,13 +688,12 @@ fn activate(
                 return Err("Build a chassis before attaching components".into());
             }
             editor.pending = Some(editor.component.clone());
+            editor.attach_angle = 0.0;
+            editor.attach_rotation_remainder = 0.0;
             editor.ghost_model = None;
         }
         "remove button" => {
-            editor
-                .document
-                .remove_component(editor.selected.ok_or("Select a component")?)?;
-            editor.selected = None;
+            remove_selected(editor)?;
         }
         "snapshot button" => editor.snapshot_requested = true,
         "new analog" | "new switch" | "new button" => {
@@ -1070,6 +1097,16 @@ pub fn input(
             ui.popup = None;
             editor.ui_revision += 1;
         }
+        if keys.just_pressed(KeyCode::Delete)
+            && editor.mode == Mode::Components
+            && editor.dialog.is_none()
+            && ui.focused.is_empty()
+            && editor.selected.is_some_and(|index| index > 0)
+        {
+            if remove_selected(&mut editor).is_ok() {
+                editor.ui_revision += 1;
+            }
+        }
     }
     for event in std::mem::take(&mut events.0) {
         let click = matches!(&event, UiEvent::Activate { .. });
@@ -1101,7 +1138,7 @@ pub fn input(
                     let ctrl =
                         keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
                     if shift {
-                        editor.attach_angle += delta.x * 0.02;
+                        rotate_attach_by_drag(&mut editor, delta.x);
                     } else if ctrl {
                         editor.attach_offset =
                             (editor.attach_offset - delta.y * 0.005).clamp(-1.0, 1.5);
@@ -1337,6 +1374,20 @@ pub fn samples(
 #[cfg(test)]
 mod slot_tests {
     use super::*;
+
+    #[test]
+    fn shift_rotation_accumulates_into_fifteen_degree_steps() {
+        let mut editor = Editor::default();
+        rotate_attach_by_drag(&mut editor, 10.0);
+        assert_eq!(editor.attach_angle, 0.0);
+        rotate_attach_by_drag(&mut editor, 4.0);
+        assert!((editor.attach_angle - 15_f32.to_radians()).abs() < 1e-6);
+        rotate_attach_by_drag(&mut editor, -10.0);
+        assert_eq!(editor.attach_angle, 15_f32.to_radians());
+        rotate_attach_by_drag(&mut editor, -5.0);
+        assert_eq!(editor.attach_angle, 0.0);
+    }
+
     #[test]
     fn forward_heading_slider_roundtrips_and_supports_undo_at_full_turn() {
         let mut editor = Editor::default();
