@@ -732,6 +732,9 @@ pub fn update(
                             .get("id")
                             .and_then(|s| s.parse::<u32>().ok())
                             == Some(editor.selected_socket);
+                        if !placement::mountable_socket(socket) {
+                            continue;
+                        }
                         let marker = if is_selected { selected } else { normal }.spawn_on_layer(
                             &mut commands,
                             "Attachment point",
@@ -1088,6 +1091,7 @@ fn pick_socket(
     model
         .attachments
         .iter()
+        .filter(|socket| placement::mountable_socket(socket))
         .filter_map(|socket| {
             let id = placement::socket_id(socket)?;
             let distance = ray_box(origin, direction, model_pose * marker_pose(socket), bounds)?;

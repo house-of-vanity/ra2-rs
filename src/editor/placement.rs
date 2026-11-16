@@ -22,6 +22,17 @@ pub fn socket_id(socket: &Attachment) -> Option<u32> {
     socket.properties.get("id")?.parse().ok()
 }
 
+pub fn mountable_socket(socket: &Attachment) -> bool {
+    let Some(kind) = socket.properties.get("attach") else {
+        return false;
+    };
+    let Some((family, gender)) = kind.rsplit_once('_') else {
+        return false;
+    };
+    !gender.eq_ignore_ascii_case("M")
+        || (family.eq_ignore_ascii_case("Generic") && !socket.properties.contains_key("host"))
+}
+
 /// Prefer a chassis mount, then a receiving socket. GMF record order is not ID order.
 pub fn default_socket(model: &Model) -> u32 {
     model
@@ -234,6 +245,9 @@ fn candidate_impl(
         .get("attach")
         .map(String::as_str)
         .unwrap_or("");
+    if strict && !mountable_socket(own) {
+        return Err("Select a mounting attachment point, not an output shaft".into());
+    }
     let (parent_mount, mounting) = if pick.component == 0 {
         if strict && !own_type.eq_ignore_ascii_case("Base_F") {
             return Err("This attachment requires a matching component socket".into());
@@ -456,6 +470,18 @@ mod tests {
         assert!(!compatible("Base_F", "Base_F"));
         assert!(!compatible("Axle_M", "Base_F"));
         assert!(!compatible("Base", "Base_F"));
+    }
+
+    #[test]
+    fn output_shafts_are_not_mounting_sides() {
+        assert!(!mountable_socket(&mount(1, "Axle_M")));
+        assert!(mountable_socket(&mount(1, "Generic_M")));
+        assert!(mountable_socket(&mount(1, "Axle_F")));
+        let mut piston_shaft = mount(1, "Generic_M");
+        piston_shaft
+            .properties
+            .insert("host".into(), "shaft".into());
+        assert!(!mountable_socket(&piston_shaft));
     }
 
     #[test]
