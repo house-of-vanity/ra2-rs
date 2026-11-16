@@ -54,6 +54,19 @@ pub fn rebuild(editor: &mut Editor) -> Result<(), String> {
         chassis::rebuild(&mut robot.chassis)
     })
 }
+
+fn remove_selected(editor: &mut Editor) -> Result<(), String> {
+    editor
+        .document
+        .remove_component(editor.selected.ok_or("Select a component")?)?;
+    editor.selected = None;
+    editor.pending = None;
+    editor.ghost_pick = None;
+    editor.ghost_pose = None;
+    editor.ghost_model = None;
+    Ok(())
+}
+
 pub fn actions(class: &str) -> &'static [&'static str] {
     match class {
         "SpinMotor" | "ServoMotor" => &[
@@ -663,10 +676,7 @@ fn activate(
             editor.ghost_model = None;
         }
         "remove button" => {
-            editor
-                .document
-                .remove_component(editor.selected.ok_or("Select a component")?)?;
-            editor.selected = None;
+            remove_selected(editor)?;
         }
         "snapshot button" => editor.snapshot_requested = true,
         "new analog" | "new switch" | "new button" => {
@@ -1069,6 +1079,16 @@ pub fn input(
             ui.focused.clear();
             ui.popup = None;
             editor.ui_revision += 1;
+        }
+        if keys.just_pressed(KeyCode::Delete)
+            && editor.mode == Mode::Components
+            && editor.dialog.is_none()
+            && ui.focused.is_empty()
+            && editor.selected.is_some_and(|index| index > 0)
+        {
+            if remove_selected(&mut editor).is_ok() {
+                editor.ui_revision += 1;
+            }
         }
     }
     for event in std::mem::take(&mut events.0) {
