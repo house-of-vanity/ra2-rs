@@ -11,9 +11,11 @@ pub fn compatible(a: &str, b: &str) -> bool {
     let (Some((a, ag)), Some((b, bg))) = (a.rsplit_once('_'), b.rsplit_once('_')) else {
         return false;
     };
-    a.eq_ignore_ascii_case(b)
-        && ((ag.eq_ignore_ascii_case("M") && bg.eq_ignore_ascii_case("F"))
-            || (ag.eq_ignore_ascii_case("F") && bg.eq_ignore_ascii_case("M")))
+    let generic = a.eq_ignore_ascii_case("Generic") || b.eq_ignore_ascii_case("Generic");
+    generic
+        || (a.eq_ignore_ascii_case(b)
+            && ((ag.eq_ignore_ascii_case("M") && bg.eq_ignore_ascii_case("F"))
+                || (ag.eq_ignore_ascii_case("F") && bg.eq_ignore_ascii_case("M"))))
 }
 
 pub fn socket_id(socket: &Attachment) -> Option<u32> {
@@ -448,6 +450,9 @@ mod tests {
     fn connection_types_ignore_case_but_preserve_gender_and_family() {
         assert!(compatible("axle_M", "Axle_F"));
         assert!(compatible("BASE_f", "base_m"));
+        assert!(compatible("Generic_M", "Axle_M"));
+        assert!(compatible("Generic_M", "Generic_M"));
+        assert!(compatible("Generic_M", "Base_F"));
         assert!(!compatible("Base_F", "Base_F"));
         assert!(!compatible("Axle_M", "Base_F"));
         assert!(!compatible("Base", "Base_F"));
