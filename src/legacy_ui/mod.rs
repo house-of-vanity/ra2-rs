@@ -70,6 +70,7 @@ pub struct State {
     pub choices: BTreeMap<String, Vec<String>>,
     pub popup: Option<String>,
     pub visibility: BTreeMap<String, bool>,
+    pub control_drag: Option<(String, Vec2)>,
 }
 #[derive(Clone, Debug)]
 pub enum UiEvent {

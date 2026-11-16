@@ -134,6 +134,7 @@ pub fn input(
                 }
             }
             state.pressed.clear();
+            state.control_drag = None;
             state.revision += 1;
             drag.button = None;
         }
@@ -141,6 +142,25 @@ pub fn input(
     if let (Some(p), Some(button)) = (cursor, drag.button)
         && p != drag.last
     {
+        if button == MouseButton::Left && p.distance(drag.start) >= 4.0 {
+            let image = match drag.name.as_str() {
+                "new analog" => Some("botlab/ctrl_analog.bmp".to_string()),
+                "new switch" => Some("botlab/ctrl_switch.bmp".to_string()),
+                "new button" => Some("botlab/ctrl_button.bmp".to_string()),
+                name if name.starts_with("control:") => state
+                    .cells
+                    .get("control grid")
+                    .and_then(|cells| cells.iter().find(|cell| cell.key == name))
+                    .and_then(|cell| cell.template.as_ref())
+                    .and_then(|template| template.find("control img"))
+                    .map(|widget| widget.value("_Filename").to_string()),
+                _ => None,
+            };
+            if let Some(image) = image.filter(|image| !image.is_empty()) {
+                state.control_drag = Some((image, p));
+                state.revision += 1;
+            }
+        }
         if drag.kind == "Slider"
             && let Some(hit) = output.hits.iter().find(|h| h.name == drag.name)
         {

@@ -18,6 +18,26 @@ use std::path::{Path, PathBuf};
 
 const ATTACH_ROTATION_STEP: f32 = std::f32::consts::PI / 12.0;
 
+fn swap_controller_positions(robot: &mut RobotDefinition, from: [i32; 2], to: [i32; 2]) {
+    if from == to {
+        return;
+    }
+    for controller in &mut robot.controllers {
+        if controller.position == from {
+            controller.position = to;
+        } else if controller.position == to {
+            controller.position = from;
+        }
+    }
+    for binding in &mut robot.bindings {
+        if binding.controller == from {
+            binding.controller = to;
+        } else if binding.controller == to {
+            binding.controller = from;
+        }
+    }
+}
+
 fn rotate_attach_by_drag(editor: &mut Editor, delta: f32) {
     editor.attach_rotation_remainder += delta * 0.02;
     while editor.attach_rotation_remainder >= ATTACH_ROTATION_STEP {
@@ -1257,6 +1277,46 @@ pub fn input(
                 button,
             } => {
                 if button == MouseButton::Left
+                    && editor.mode == Mode::Wiring
+                    && editor.dialog.is_none()
+                    && matches!(name.as_str(), "new analog" | "new switch" | "new button")
+                    && let Some(slot) = output
+                        .hits
+                        .iter()
+                        .rev()
+                        .find(|h| {
+                            h.name.starts_with("control:")
+                                && h.rect.contains(point)
+                                && h.clip.contains(point)
+                        })
+                        .and_then(|h| h.name.strip_prefix("control:"))
+                        .and_then(|s| s.parse::<i32>().ok())
+                {
+                    editor.selected_control_slot = [slot % 4, slot / 4];
+                    editor.selected_controller = editor
+                        .document
+                        .robot
+                        .controllers
+                        .iter()
+                        .position(|c| c.position == editor.selected_control_slot);
+                    if editor.selected_controller.is_none() {
+                        let _ = activate(
+                            &mut editor,
+                            &name,
+                            "",
+                            point,
+                            &catalog,
+                            &assets,
+                            &mut ui,
+                            &output,
+                            &mut view,
+                            &mut nav,
+                            &mut draft,
+                            &settings,
+                        );
+                    }
+                }
+                if button == MouseButton::Left
                     && name.starts_with("control:")
                     && let Some(target) = output.hits.iter().rev().find(|h| {
                         h.name.starts_with("control:")
@@ -1276,20 +1336,7 @@ pub fn input(
                     let a = [from % 4, from / 4];
                     let b = [to % 4, to / 4];
                     let _ = editor.document.edit("Move controller", |r| {
-                        for c in &mut r.controllers {
-                            if c.position == a {
-                                c.position = b;
-                            } else if c.position == b {
-                                c.position = a;
-                            }
-                        }
-                        for binding in &mut r.bindings {
-                            if binding.controller == a {
-                                binding.controller = b;
-                            } else if binding.controller == b {
-                                binding.controller = a;
-                            }
-                        }
+                        swap_controller_positions(r, a, b);
                         Ok(())
                     });
                 }
@@ -1431,6 +1478,38 @@ mod slot_tests {
         result.sort();
         result
     }
+
+    #[test]
+    fn dragging_controller_swaps_slots_and_bindings() {
+        let mut robot = Editor::default().document.robot;
+        robot.controllers = vec![
+            Controller {
+                name: "Name: A".into(),
+                position: [0, 0],
+                kind: 1,
+                keys: vec![],
+            },
+            Controller {
+                name: "Name: B".into(),
+                position: [1, 0],
+                kind: 2,
+                keys: vec![],
+            },
+        ];
+        robot.bindings = vec![ControlBinding {
+            component: 1,
+            action: "Spin".into(),
+            controller: [0, 0],
+            key: 0,
+        }];
+
+        swap_controller_positions(&mut robot, [0, 0], [1, 0]);
+
+        assert_eq!(robot.controllers[0].position, [1, 0]);
+        assert_eq!(robot.controllers[1].position, [0, 0]);
+        assert_eq!(robot.bindings[0].controller, [1, 0]);
+    }
+
     #[test]
     fn wiring_survives_reopening_confirmation_and_bot_reload_for_all_control_types() {
         for kind in [1, 2, 4] {

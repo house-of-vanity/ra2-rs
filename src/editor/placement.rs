@@ -388,6 +388,32 @@ fn validate_using(
         .model
         .as_ref()
         .and_then(|m| m.objects.first());
+    let height = editor.document.robot.chassis.height;
+    let mut points = asset
+        .model
+        .objects
+        .iter()
+        .filter(|object| object.visible)
+        .flat_map(|object| object.positions())
+        .map(|point| pose.transform_point3(point));
+    if let Some(first) = points.next() {
+        let (min_y, max_y) = points.fold((first.y, first.y), |(min_y, max_y), point| {
+            (min_y.min(point.y), max_y.max(point.y))
+        });
+        let exterior = matches!(
+            asset.definition.value("type").to_ascii_lowercase().as_str(),
+            "weapons" | "extras"
+        ) || component.class.eq_ignore_ascii_case("wheel")
+            || component.class.to_ascii_lowercase().contains("caster")
+            || asset.name().to_ascii_lowercase().contains("caster")
+            || key.contains("caster");
+        if !exterior && (min_y < -0.008 || max_y > height + 0.008) {
+            return Err(format!(
+                "{} must stay within the chassis height",
+                asset.name()
+            ));
+        }
+    }
     // A chassis is a hollow shell. A closed trimesh query can interpret the
     // entire interior as solid; test its panels separately instead.
     let chassis_shapes = chassis
@@ -698,6 +724,47 @@ mod tests {
             validate(&editor, &catalog, &board_part, through_roof, Some(&hollow)).is_err(),
             "a component crossing the roof must be rejected"
         );
+        let above_roof =
+            Mat4::from_translation(Vec3::Y * (editor.document.robot.chassis.height + 0.5)) * pose;
+        assert!(
+            validate(&editor, &catalog, &board_part, above_roof, Some(&hollow)).is_err(),
+            "a component above the roof must be rejected"
+        );
+        let below_floor = Mat4::from_translation(Vec3::Y * -0.5) * pose;
+        assert!(
+            validate(&editor, &catalog, &board_part, below_floor, Some(&hollow)).is_err(),
+            "a component below the floor must be rejected"
+        );
+        for category in ["weapons", "extras"] {
+            let asset = catalog
+                .browser(category)
+                .into_iter()
+                .find(|asset| {
+                    asset
+                        .model
+                        .objects
+                        .iter()
+                        .any(|object| object.visible && object.positions().next().is_some())
+                })
+                .unwrap_or_else(|| panic!("missing {category} asset"));
+            let mut part = board_part.clone();
+            part.definition = asset.key.clone();
+            part.class = asset.definition.value("base").into();
+            for y in [-10.0, 10.0] {
+                assert!(
+                    validate(
+                        &editor,
+                        &catalog,
+                        &part,
+                        Mat4::from_translation(Vec3::Y * y),
+                        Some(&hollow)
+                    )
+                    .is_ok(),
+                    "{category} should be allowed outside chassis height: {}",
+                    asset.name()
+                );
+            }
+        }
         let tank = catalog
             .components
             .values()
