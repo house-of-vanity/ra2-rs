@@ -855,6 +855,30 @@ pub fn compose(assets: &LegacyAssets, state: &State, width: usize, height: usize
             });
         }
     }
+    if let Some((image, point)) = &state.control_drag {
+        if let Some(target) = layout.frame.hits.iter().rev().find(|hit| {
+            hit.name.starts_with("control:")
+                && hit.rect.contains(*point)
+                && hit.clip.contains(*point)
+        }) {
+            layout
+                .frame
+                .pixels
+                .border(target.rect, 2.0, [0.3, 1.0, 0.3, 1.0], target.clip);
+        }
+        let size = assets
+            .image(image)
+            .map(|image| Vec2::new(image.width as f32, image.height as f32))
+            .unwrap_or(Vec2::splat(32.0));
+        let size = size * (40.0 / size.max_element()).min(1.0);
+        layout.image(
+            image,
+            Rect::from_center_size(*point, size),
+            [1.0, 1.0, 1.0, 0.8],
+            true,
+            bounds,
+        );
+    }
     layout.frame
 }
 

@@ -35,6 +35,19 @@ pub fn patch(w: &mut Widget, name: &str, key: &str, value: &str) {
         patch(child, name, key, value);
     }
 }
+
+fn rename_exact(w: &mut Widget, from: &str, to: &str) {
+    if w.name() == from {
+        w.fields.insert("Name".into(), vec![to.into()]);
+    }
+    if let Some(inner) = &mut w.wrapped {
+        rename_exact(inner, from, to);
+    }
+    for child in &mut w.children {
+        rename_exact(child, from, to);
+    }
+}
+
 pub(crate) fn text(w: &mut Widget, name: &str, value: &str) {
     if w.name() == name {
         let value = value.to_string();
@@ -226,9 +239,11 @@ pub fn sync(editor: &Editor, catalog: &Catalog, assets: &mut LegacyAssets, ui: &
             {
                 let mut template = (*base).clone();
                 patch(&mut template, "control img", "_Filename", &cell.image);
+                let name_widget = format!("control name:{i}");
+                rename_exact(&mut template, "control name", &name_widget);
                 text(
                     &mut template,
-                    "control name",
+                    &name_widget,
                     c.name.trim_start_matches("Name: "),
                 );
                 let keys = c
