@@ -363,7 +363,7 @@ fn run(world: &mut World, mut check: Local<Check>) {
             world
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .release(KeyCode::KeyW);
-            // One moving native robot rams an AFK opponent. Do not inject HP or points.
+            // Arrange a collision between native robots; do not inject HP or points.
             let assemblies = world
                 .resource::<Session>()
                 .robots

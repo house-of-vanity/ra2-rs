@@ -1,4 +1,10 @@
 //! Original Exhibition workflow. Rules and articulated robots live in reusable modules.
+mod ai;
+mod ai_controls;
+mod ai_obstacles;
+mod ai_tactics;
+#[cfg(test)]
+mod ai_tests;
 pub(crate) mod arena;
 mod audio;
 mod camera;
@@ -188,6 +194,10 @@ impl Plugin for BattlePlugin {
                     .chain()
                     .after(legacy_ui::Input)
                     .before(legacy_ui::Paint),
+            )
+            .add_systems(
+                FixedUpdate,
+                ai::update.before(crate::gameplay::drive::motors),
             )
             .add_systems(
                 FixedUpdate,
