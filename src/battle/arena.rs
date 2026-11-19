@@ -70,6 +70,8 @@ pub(crate) struct State {
     pub hill_clock: f32,
     pub springs: Vec<Spring>,
     pub debris: Vec<(Entity, usize)>,
+    /// Local collision triangles, keyed by their arena body for live transforms.
+    pub ai_obstacles: ai_obstacles::Geometry,
     pub king_owner: Option<usize>,
 }
 pub(crate) struct Loaded {
@@ -309,6 +311,19 @@ fn spawn_inner(
             }
         }
         let id = entity.id();
+        if !body.disabled {
+            let object = (!body.proxy.is_empty())
+                .then(|| model.object(&body.proxy))
+                .flatten()
+                .or_else(|| model.object(&body.name));
+            if let Some(object) = object {
+                state.ai_obstacles.add_mesh(
+                    id,
+                    &object.vertices,
+                    object.faces.iter().map(|face| face.vertices),
+                );
+            }
+        }
         entities.insert(body.name.clone(), id);
         bodies.insert(body.name.clone(), *body);
         if body.mass > 0. {
@@ -572,6 +587,151 @@ fn spawn_inner(
 mod tests {
     use super::*;
     use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
+
+    /// Run with:
+    /// RA2_GAME_DIR='/path/to/Robot Arena 2' cargo test --bin physics-demo \
+    ///   native_ai_obstacle_geometry -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires original arena assets in RA2_GAME_DIR"]
+    fn native_ai_obstacle_geometry() {
+        use std::time::Instant;
+
+        let root = std::env::var_os("RA2_GAME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../RobotArena2")
+            });
+        let arenas = crate::content::arenas::load(&root)
+            .unwrap_or_else(|e| panic!("Cannot load {}: {e}; set RA2_GAME_DIR", root.display()));
+        let mut files = vec![];
+        crate::content::scan(&root.join("Arenas"), &mut files).unwrap();
+        let index = files
+            .into_iter()
+            .map(|p| {
+                (
+                    ra2_formats::components::normalize(
+                        &p.strip_prefix(&root).unwrap().to_string_lossy(),
+                    ),
+                    p,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for key in ["compressor", "bridge"] {
+            let descriptor = arenas
+                .iter()
+                .find(|a| a.key == key)
+                .unwrap_or_else(|| panic!("missing arena {key}"));
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, TransformPlugin))
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<Assets<Image>>()
+                .insert_resource(Catalog {
+                    root: root.clone(),
+                    index: index.clone(),
+                    ..default()
+                });
+            let context = app.world_mut().spawn_empty().id();
+            let arena = descriptor.clone();
+            let loaded = app
+                .world_mut()
+                .run_system_once(
+                    move |mut commands: Commands,
+                          catalog: Res<Catalog>,
+                          mut meshes: ResMut<Assets<Mesh>>,
+                          mut materials: ResMut<Assets<StandardMaterial>>,
+                          mut images: ResMut<Assets<Image>>| {
+                        spawn(
+                            &mut commands,
+                            context,
+                            true,
+                            &arena,
+                            &catalog,
+                            &crate::config::GarageConfig::default(),
+                            &mut meshes,
+                            &mut materials,
+                            &mut images,
+                        )
+                    },
+                )
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{key}: {e}"));
+            let (min, max) = loaded.state.bounds.expect("arena bounds");
+            let centre = (min + max) * 0.5;
+            let floor = loaded.starts[0].translation.y;
+            let range = (max - min).length();
+            let now = Instant::now();
+            let obstacles = loaded.state.ai_obstacles.nearby(
+                Vec3::new(centre.x, floor, centre.z),
+                1.0,
+                range,
+                |entity| app.world().get::<Transform>(entity).copied(),
+            );
+            let scan_time = now.elapsed();
+            // Known interior collision surfaces in the original GMFs, not the
+            // surrounding shell: the bridge rail and compressor's inner wall.
+            let probe = if key == "bridge" {
+                Vec2::new(2.5, -2.471927)
+            } else {
+                Vec2::new(13.802465, 5.0)
+            };
+            let wall = *obstacles
+                .iter()
+                .find(|r| {
+                    let min = Vec2::from_array(r.min) - Vec2::splat(0.01);
+                    let max = Vec2::from_array(r.max) + Vec2::splat(0.01);
+                    probe.cmpge(min).all() && probe.cmple(max).all()
+                })
+                .unwrap_or_else(|| panic!("{key}: missing interior wall at {probe:?}"));
+            println!(
+                "{key}: floor={floor:.2}, obstacles={}, scan={scan_time:?}, interior={wall:?}",
+                obstacles.len()
+            );
+            let a = Vec2::from_array(wall.min);
+            let b = Vec2::from_array(wall.max);
+            let mid = (a + b) * 0.5;
+            let axis = if b.x - a.x < b.y - a.y {
+                Vec2::X
+            } else {
+                Vec2::Y
+            };
+            let reach = (b - a).dot(axis).abs() * 0.5 + 2.0;
+            let (start, goal) = (mid - axis * reach, mid + axis * reach);
+            let now = Instant::now();
+            let next = ai_obstacles::waypoint(start, goal, &[wall], 0.5);
+            let route_time = now.elapsed();
+            assert!(
+                next.is_some_and(|p| p != goal),
+                "{key}: cannot route around real obstacle {wall:?}"
+            );
+            let repeated = vec![wall; 129];
+            let now = Instant::now();
+            assert!(ai_obstacles::waypoint(start, goal, &repeated[..128], 0.5).is_some());
+            let at_limit_time = now.elapsed();
+            let now = Instant::now();
+            assert!(ai_obstacles::waypoint(start, goal, &repeated, 0.5).is_none());
+            let limit_time = now.elapsed();
+            let clear_start = mid + axis * (reach + 3.0);
+            let clear_goal = mid + axis * (reach + 5.0);
+            assert_eq!(
+                ai_obstacles::waypoint(clear_start, clear_goal, &repeated, 0.5),
+                Some(clear_goal)
+            );
+            let now = Instant::now();
+            let full_result = ai_obstacles::waypoint(start, goal, &obstacles, 0.5);
+            if key == "bridge" {
+                assert!(
+                    full_result.is_some_and(|p| p != goal),
+                    "bridge: full scene has no detour"
+                );
+            }
+            println!(
+                "{key}: single-wall={route_time:?}, 128 repeated={at_limit_time:?}, 129 blocked={limit_time:?}, full scene={:?} result={full_result:?}",
+                now.elapsed()
+            );
+        }
+    }
     /// Exercise native frames, proxies, hidden colliders, four starts and cleanup,
     /// including both the articulated and hazards-disabled variants, without a GPU.
     #[test]
