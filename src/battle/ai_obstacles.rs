@@ -14,6 +14,188 @@ pub(crate) struct Geometry {
 }
 
 impl Geometry {
+    /// Build a local multi-level floor grid and find a connected route over
+    /// ramps. Each cell retains multiple heights, so bridges are not flattened.
+    pub(crate) fn height_waypoint(
+        &self,
+        start: Vec3,
+        goal: Vec3,
+        mut transform: impl FnMut(Entity) -> Option<Transform>,
+    ) -> Option<Vec2> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        const CELL: f32 = 0.75;
+        const LAYERS: usize = 4;
+        let a = Vec2::new(start.x, start.z);
+        let b = Vec2::new(goal.x, goal.z);
+        if !start.is_finite() || !goal.is_finite() {
+            return None;
+        }
+        let origin = ((a.min(b) - Vec2::splat(6.0)) / CELL).floor() * CELL;
+        let extent = a.max(b) + Vec2::splat(6.0) - origin;
+        let width = (extent.x / CELL).ceil() as usize + 1;
+        let height = (extent.y / CELL).ceil() as usize + 1;
+        if width > 96 || height > 96 {
+            return None;
+        }
+        let mut floors = vec![Vec::<f32>::new(); width * height];
+        let mut walls = Vec::<(Vec2, Vec2, f32, f32)>::new();
+        for (entity, triangles) in &self.meshes {
+            let Some(pose) = transform(*entity) else {
+                continue;
+            };
+            for triangle in triangles {
+                let p = triangle.map(|v| pose.transform_point(v));
+                let normal = (p[1] - p[0]).cross(p[2] - p[0]);
+                if !normal.is_finite() || normal.length_squared() < 1e-8 {
+                    continue;
+                }
+                if normal.y.abs() / normal.length() < 0.65 {
+                    let min = p
+                        .iter()
+                        .copied()
+                        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+                    let max = p
+                        .iter()
+                        .copied()
+                        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+                    if max.x >= origin.x
+                        && min.x <= origin.x + extent.x
+                        && max.z >= origin.y
+                        && min.z <= origin.y + extent.y
+                    {
+                        walls.push((
+                            Vec2::new(min.x, min.z) - Vec2::splat(1.1),
+                            Vec2::new(max.x, max.z) + Vec2::splat(1.1),
+                            min.y,
+                            max.y,
+                        ));
+                    }
+                    continue;
+                }
+                let p0 = Vec2::new(p[0].x, p[0].z);
+                let p1 = Vec2::new(p[1].x, p[1].z);
+                let p2 = Vec2::new(p[2].x, p[2].z);
+                let cross = |v: Vec2, w: Vec2| v.x * w.y - v.y * w.x;
+                let det = cross(p1 - p0, p2 - p0);
+                if det.abs() < 1e-6 {
+                    continue;
+                }
+                let low = ((p0.min(p1).min(p2) - origin) / CELL)
+                    .floor()
+                    .max(Vec2::ZERO);
+                let high = ((p0.max(p1).max(p2) - origin) / CELL)
+                    .ceil()
+                    .min(Vec2::new((width - 1) as f32, (height - 1) as f32));
+                if low.x > high.x || low.y > high.y {
+                    continue;
+                }
+                for z in low.y as usize..=high.y as usize {
+                    for x in low.x as usize..=high.x as usize {
+                        let point = origin + Vec2::new(x as f32, z as f32) * CELL;
+                        let u = cross(point - p0, p2 - p0) / det;
+                        let v = cross(p1 - p0, point - p0) / det;
+                        if u < -0.001 || v < -0.001 || u + v > 1.001 {
+                            continue;
+                        }
+                        let y = p[0].y + u * (p[1].y - p[0].y) + v * (p[2].y - p[0].y);
+                        let cell = &mut floors[z * width + x];
+                        if y.is_finite()
+                            && !cell.iter().any(|h| (h - y).abs() < 0.15)
+                            && cell.len() < LAYERS
+                        {
+                            cell.push(y);
+                        }
+                    }
+                }
+            }
+        }
+        let locate = |point: Vec3| -> Option<usize> {
+            let grid = (Vec2::new(point.x, point.z) - origin) / CELL;
+            let cx = grid.x.round() as isize;
+            let cz = grid.y.round() as isize;
+            (-2..=2)
+                .flat_map(|dz| (-2..=2).map(move |dx| (cx + dx, cz + dz)))
+                .filter(|&(x, z)| x >= 0 && z >= 0 && (x as usize) < width && (z as usize) < height)
+                .flat_map(|(x, z)| {
+                    floors[z as usize * width + x as usize]
+                        .iter()
+                        .enumerate()
+                        .map(move |(layer, y)| {
+                            let dist = Vec2::new(x as f32 - grid.x, z as f32 - grid.y).length()
+                                * CELL
+                                + (y - point.y).abs() * 2.0;
+                            ((z as usize * width + x as usize) * LAYERS + layer, dist)
+                        })
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .filter(|(_, cost)| *cost < 2.5)
+                .map(|(id, _)| id)
+        };
+        let source = locate(start)?;
+        let destination = locate(goal)?;
+        let count = floors.len() * LAYERS;
+        let mut cost = vec![u32::MAX; count];
+        let mut previous = vec![usize::MAX; count];
+        let mut queue = BinaryHeap::new();
+        cost[source] = 0;
+        queue.push((Reverse(0_u32), source));
+        while let Some((Reverse(current), node)) = queue.pop() {
+            if node == destination {
+                break;
+            }
+            if current != cost[node] {
+                continue;
+            }
+            let cell = node / LAYERS;
+            let x = cell % width;
+            let z = cell / width;
+            let y = floors[cell][node % LAYERS];
+            for (dx, dz) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x as isize + dx;
+                let nz = z as isize + dz;
+                if nx < 0 || nz < 0 || nx as usize >= width || nz as usize >= height {
+                    continue;
+                }
+                let next_cell = nz as usize * width + nx as usize;
+                for (layer, next_y) in floors[next_cell].iter().enumerate() {
+                    let rise = (next_y - y).abs();
+                    if rise > 0.48 {
+                        continue;
+                    }
+                    let from = origin + Vec2::new(x as f32, z as f32) * CELL;
+                    let to = origin + Vec2::new(nx as f32, nz as f32) * CELL;
+                    if walls.iter().any(|&(min, max, low, high)| {
+                        high > y.min(*next_y) + 0.15
+                            && low < y.max(*next_y) + 0.8
+                            && intersects(from, to, min, max)
+                    }) {
+                        continue;
+                    }
+                    let next = next_cell * LAYERS + layer;
+                    let next_cost = current + 100 + (rise * 60.0) as u32;
+                    if next_cost < cost[next] {
+                        cost[next] = next_cost;
+                        previous[next] = node;
+                        queue.push((Reverse(next_cost), next));
+                    }
+                }
+            }
+        }
+        if cost[destination] == u32::MAX {
+            return None;
+        }
+        let mut path = vec![destination];
+        while *path.last()? != source {
+            path.push(*previous.get(*path.last()?)?);
+            if *path.last()? == usize::MAX {
+                return None;
+            }
+        }
+        path.reverse();
+        let node = *path.get(3.min(path.len() - 1))? / LAYERS;
+        Some(origin + Vec2::new((node % width) as f32, (node / width) as f32) * CELL)
+    }
     pub(super) fn add_mesh(
         &mut self,
         entity: Entity,
@@ -228,9 +410,57 @@ fn intersects(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> bool {
     true
 }
 
+pub(crate) fn line_clear(start: Vec2, end: Vec2, obstacles: &[Rect]) -> bool {
+    !obstacles.iter().any(|r| {
+        let min = Vec2::from_array(r.min);
+        let max = Vec2::from_array(r.max);
+        min.is_finite() && max.is_finite() && intersects(start, end, min, max)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_between_heights_only_when_ramp_connects_them() {
+        let entity = Entity::PLACEHOLDER;
+        let mut geometry = Geometry::default();
+        let quad = |x0: f32, x1: f32, y0: f32, y1: f32| {
+            [
+                Vec3::new(x0, y0, -3.),
+                Vec3::new(x1, y1, -3.),
+                Vec3::new(x1, y1, 3.),
+                Vec3::new(x0, y0, 3.),
+            ]
+        };
+        geometry.add_mesh(
+            entity,
+            &quad(-5., -2., 0., 0.),
+            [[0, 1, 2], [0, 2, 3]].into_iter(),
+        );
+        geometry.add_mesh(
+            entity,
+            &quad(2., 5., 1.5, 1.5),
+            [[0, 1, 2], [0, 2, 3]].into_iter(),
+        );
+        let start = Vec3::new(-4., 0.1, 0.);
+        let goal = Vec3::new(4., 1.6, 0.);
+        assert!(
+            geometry
+                .height_waypoint(start, goal, |_| Some(Transform::IDENTITY))
+                .is_none()
+        );
+        geometry.add_mesh(
+            entity,
+            &quad(-2., 2., 0., 1.5),
+            [[0, 1, 2], [0, 2, 3]].into_iter(),
+        );
+        let next = geometry
+            .height_waypoint(start, goal, |_| Some(Transform::IDENTITY))
+            .expect("ramp connects the two floors");
+        assert!(next.x > start.x && next.x < goal.x, "{next:?}");
+    }
 
     #[test]
     fn floor_is_ignored_wall_is_clipped_and_moving_body_is_followed() {
