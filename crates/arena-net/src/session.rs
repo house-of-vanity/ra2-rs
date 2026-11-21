@@ -324,6 +324,8 @@ pub struct Frame {
     pub remaining: f32,
     pub scores: [f32; 4],
     pub eliminated: [bool; 4],
+    pub immobility_countdown: [u8; 4],
+    pub counted_out: [bool; 4],
     pub winners: [bool; 4],
     pub bodies: Vec<Pose>,
     pub robots: Vec<Robot>,
@@ -334,6 +336,10 @@ impl Frame {
         if self.robots.len() > 4
             || self.bodies.len() > 512
             || self.traps.len() > 128
+            || self
+                .immobility_countdown
+                .iter()
+                .any(|&seconds| seconds > 10)
             || self.phase > 3
             || self.tick > (1 << 48)
             || !self.phase_time.is_finite()

@@ -301,7 +301,8 @@ fn play(
                 AudioPlayer(handle),
                 settings(
                     !path.to_ascii_lowercase().contains("announcers/")
-                        && !path.ends_with("match_countdown.wav"),
+                        && !path.ends_with("match_countdown.wav")
+                        && !path.ends_with("immobile_countdown.wav"),
                     false,
                     0.7,
                 ),
