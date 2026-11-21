@@ -73,6 +73,7 @@ pub struct Decision {
 pub struct Tactics {
     rng: u64,
     previous: Option<Point>,
+    previous_heading: Option<Point>,
     stuck_time: f32,
     recovery_time: f32,
     recovery_side: f32,
@@ -87,6 +88,7 @@ impl Tactics {
         Self {
             rng: seed,
             previous: None,
+            previous_heading: None,
             stuck_time: 0.0,
             recovery_time: 0.0,
             recovery_side: 1.0,
@@ -116,6 +118,7 @@ impl Tactics {
         };
         if !me.alive || !finite(me.position) {
             self.previous = None;
+            self.previous_heading = None;
             self.stuck_time = 0.0;
             self.recovery_time = 0.0;
             self.last_direction = [0.0, 0.0];
@@ -130,8 +133,15 @@ impl Tactics {
         }
         // Measure progress across a time window, not per frame: tiny movements at
         // high frame rates should not be mistaken for a stationary robot.
+        let heading = unit(me.forward);
+        let rotated = self
+            .previous_heading
+            .is_some_and(|old| length(heading) > 0.0 && dot(old, heading) < 0.98);
+        if rotated || self.previous_heading.is_none() {
+            self.previous_heading = (length(heading) > 0.0).then_some(heading);
+        }
         if let Some(previous) = self.previous {
-            if length(sub(me.position, previous)) >= 0.2 {
+            if length(sub(me.position, previous)) >= 0.2 || rotated {
                 self.previous = Some(me.position);
                 self.stuck_time = 0.0;
             } else if length(self.last_direction) > 0.5 && self.recovery_time <= 0.0 {

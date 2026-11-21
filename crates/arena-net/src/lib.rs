@@ -22,7 +22,7 @@ pub const DT: f32 = 1. / HZ as f32;
 pub const MAX_PLAYERS: usize = 4;
 pub const MAX_BODIES: usize = 128;
 pub const HISTORY: usize = 360;
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {

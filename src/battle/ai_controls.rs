@@ -44,6 +44,7 @@ pub struct WiringAnalysis {
     weapons: Vec<usize>,
     slots: Vec<(usize, usize)>,
     reload_ticks: Vec<u32>,
+    continuous: Vec<bool>,
     side_scale: f32,
 }
 
@@ -63,6 +64,7 @@ impl WiringAnalysis {
         let mut steering = Vec::new();
         let mut weapons = Vec::new();
         let mut reload_ticks = vec![DEFAULT_RELOAD_TICKS; robot.components.len()];
+        let mut continuous = vec![false; robot.components.len()];
         for joint in &rig.joints {
             if joint.component >= robot.components.len() {
                 continue;
@@ -119,6 +121,9 @@ impl WiringAnalysis {
             if joint.kind != ActuatorKind::Passive && !weapons.contains(&joint.component) {
                 weapons.push(joint.component);
             }
+            if joint.kind == ActuatorKind::Spin {
+                continuous[joint.component] = true;
+            }
         }
         // Cannon and other directly controlled components need not have a joint.
         for binding in &robot.bindings {
@@ -153,6 +158,7 @@ impl WiringAnalysis {
             weapons,
             slots,
             reload_ticks,
+            continuous,
             side_scale,
         }
     }
@@ -211,6 +217,7 @@ struct Cached {
     forward: f32,
     turn: f32,
     fire: bool,
+    spin_up: bool,
     ready: Vec<bool>,
     samples: Vec<Vec<f32>>,
 }
@@ -231,7 +238,13 @@ impl AiControls {
     /// returned samples once as well, including when the robot is disabled.
     /// Call at the simulation fixed rate of 120 Hz. Cooldowns are conservative
     /// estimates; physical actuator state and available resources are not observed.
+    #[cfg(test)]
     pub fn samples(&mut self, intent: Intent) -> Vec<Vec<f32>> {
+        self.samples_with_spin(intent, intent.fire)
+    }
+
+    /// The spinner may be started before the opponent enters striking range.
+    pub fn samples_with_spin(&mut self, intent: Intent, spin_up: bool) -> Vec<Vec<f32>> {
         let robot = &self.analysis.robot;
         let mut samples: Vec<Vec<f32>> = robot
             .controllers
@@ -254,6 +267,7 @@ impl AiControls {
             && cache.forward == forward
             && cache.turn == turn
             && cache.fire == intent.fire
+            && cache.spin_up == spin_up
             && cache.ready == ready
         {
             let samples = cache.samples.clone();
@@ -288,6 +302,11 @@ impl AiControls {
             weights[i] = 1.0;
         }
         for &i in &self.analysis.weapons {
+            let active = if self.analysis.continuous[i] {
+                spin_up
+            } else {
+                intent.fire
+            };
             let positive = robot.bindings.iter().any(|binding| {
                 binding.component == i
                     && matches!(
@@ -305,14 +324,14 @@ impl AiControls {
                             | "Retract"
                     )
             });
-            desired[i].drive = if intent.fire && positive {
+            desired[i].drive = if active && positive {
                 1.0
-            } else if intent.fire && negative {
+            } else if active && negative {
                 -1.0
             } else {
                 0.0
             };
-            desired[i].fire = intent.fire && self.cooldown[i] == 0;
+            desired[i].fire = active && self.cooldown[i] == 0;
             weights[i] = 0.6;
         }
         // Coordinate descent evaluates the complete native wiring each time. This
@@ -363,6 +382,7 @@ impl AiControls {
                 forward,
                 turn,
                 fire: intent.fire,
+                spin_up,
                 ready,
                 samples: samples.clone(),
             })
@@ -675,6 +695,45 @@ mod tests {
             }),
         );
         assert_eq!(commands[5].drive, -1.0);
+    }
+
+    #[test]
+    fn spinup_does_not_trigger_short_range_weapon() {
+        let (mut robot, mut rig) = fixture();
+        robot.components.push(component("SpinMotor"));
+        let spin = robot.components.len() - 1;
+        robot.controllers.push(Controller {
+            name: "spinner".into(),
+            position: [6, 0],
+            kind: 1,
+            keys: vec![vec![]],
+        });
+        robot.bindings.push(ControlBinding {
+            component: spin,
+            controller: [6, 0],
+            key: 0,
+            action: "Spin Clockwise".into(),
+        });
+        rig.joints.push(joint(spin, 2, Vec3::Y, ActuatorKind::Spin));
+        let mut ai = AiControls::new(WiringAnalysis::new(&robot, &rig));
+        let mut controls = Controls::default();
+        let commands = controls.evaluate(&robot, &ai.samples_with_spin(Intent::default(), true));
+        assert!(commands[spin].drive > 0.5);
+        assert!(
+            !commands[5].fire,
+            "distant enemy must not trigger the hammer"
+        );
+        let commands = controls.evaluate(
+            &robot,
+            &ai.samples_with_spin(
+                Intent {
+                    fire: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+        );
+        assert!(commands[5].fire, "nearby enemy should trigger the hammer");
     }
 
     #[test]

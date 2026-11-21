@@ -15,6 +15,104 @@ fn scout_ai_drives_toward_opponent_headlessly() {
     check_approach("AI/Team0/Bot0.bot", "front", Vec2::new(0., 1.));
 }
 
+#[test]
+#[ignore = "requires original assets; known failure: Scout stalls on bridge approach"]
+fn scout_navigates_from_lower_floor_towards_bridge() {
+    let (mut app, _) = native_garage("AI/Team0/Bot0.bot");
+    app.update();
+    let root = std::path::PathBuf::from(std::env::var_os("RA2_GAME_DIR").unwrap());
+    let descriptor = crate::content::arenas::load(&root)
+        .unwrap()
+        .into_iter()
+        .find(|a| a.key == "bridge")
+        .unwrap();
+    let (context, bodies) = {
+        let garage = app.world().resource::<Garage>();
+        (garage.context, garage.bodies.clone())
+    };
+    let old_environment: Vec<Entity> = app
+        .world_mut()
+        .query::<(Entity, &Name)>()
+        .iter(app.world())
+        .filter(|(_, name)| name.as_str() == "Garage walls and floor")
+        .map(|(entity, _)| entity)
+        .collect();
+    for entity in old_environment {
+        if let Ok(e) = app.world_mut().get_entity_mut(entity) {
+            e.despawn();
+        }
+    }
+    let loaded = app
+        .world_mut()
+        .run_system_once(
+            move |mut commands: Commands,
+                  catalog: Res<crate::editor::catalog::Catalog>,
+                  mut meshes: ResMut<Assets<Mesh>>,
+                  mut materials: ResMut<Assets<StandardMaterial>>,
+                  mut images: ResMut<Assets<Image>>| {
+                super::arena::spawn(
+                    &mut commands,
+                    context,
+                    false,
+                    &descriptor,
+                    &catalog,
+                    &GarageConfig::default(),
+                    &mut meshes,
+                    &mut materials,
+                    &mut images,
+                )
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let initial = app.world().get::<Transform>(bodies[0]).unwrap().translation;
+    let start = Vec3::new(0., -1.95, 6.5);
+    for &body in &bodies {
+        app.world_mut()
+            .get_mut::<Transform>(body)
+            .unwrap()
+            .translation += start - initial;
+        *app.world_mut().get_mut::<Velocity>(body).unwrap() = Velocity::zero();
+    }
+    let goal = Vec3::new(0., -0.2, 0.);
+    let target_body = app
+        .world_mut()
+        .spawn((RobotBody, Transform::from_translation(goal)))
+        .id();
+    let mut scout = std::mem::replace(
+        &mut app.world_mut().resource_mut::<Garage>().instance,
+        RobotInstance::new(0, context, GarageConfig::default()),
+    );
+    scout.id = 2;
+    scout.running = true;
+    let mut target = RobotInstance::new(1, context, GarageConfig::default());
+    target.running = true;
+    target.bodies.push(target_body);
+    target.damage.bodies.push(BodyParts::default());
+    app.insert_resource(Session {
+        context,
+        phase: Phase::Playing,
+        robots: vec![target, scout],
+        arena_state: loaded.state,
+        environment: loaded.entities,
+        ..default()
+    });
+    app.world_mut().resource_mut::<Navigation>().page = Page::Match;
+    app.add_systems(FixedUpdate, ai::update.before(drive::motors));
+    let mut best = start.distance(goal);
+    let mut highest = start.y;
+    for _ in 0..(crate::STEP.recip() as usize * 120) {
+        app.update();
+        let position = app.world().get::<Transform>(bodies[0]).unwrap().translation;
+        best = best.min(position.distance(goal));
+        highest = highest.max(position.y);
+    }
+    assert!(
+        best < 2.5 && highest > start.y + 0.5,
+        "Scout did not climb from lower bridge floor: closest={best:.2}, highest={highest:.2}"
+    );
+}
+
 fn check_approach(path: &str, direction: &str, offset: Vec2) {
     let (mut app, robot) = native_garage(path);
     // Let the native assembly spawn and settle before measuring its movement.

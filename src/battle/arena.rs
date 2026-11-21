@@ -669,6 +669,17 @@ mod tests {
                 |entity| app.world().get::<Transform>(entity).copied(),
             );
             let scan_time = now.elapsed();
+            if key == "bridge" {
+                let from = Vec3::new(0.0, -2.0, 6.5);
+                let to = Vec3::new(0.0, 0.0, 0.0);
+                let step = loaded
+                    .state
+                    .ai_obstacles
+                    .height_waypoint(from, to, |entity| {
+                        app.world().get::<Transform>(entity).copied()
+                    });
+                assert!(step.is_some(), "bridge: no path from lower floor to bridge");
+            }
             // Known interior collision surfaces in the original GMFs, not the
             // surrounding shell: the bridge rail and compressor's inner wall.
             let probe = if key == "bridge" {

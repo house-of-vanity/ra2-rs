@@ -254,6 +254,8 @@ pub(super) fn capture(
         remaining: s.remaining,
         scores: s.score,
         eliminated: s.eliminated,
+        immobility_countdown: s.immobility_countdown,
+        counted_out: s.counted_out,
         winners: s.winners,
         bodies,
         robots,
@@ -405,6 +407,8 @@ pub(super) fn apply(
         s.remaining = latest.remaining;
         s.score = latest.scores;
         s.eliminated = latest.eliminated;
+        s.immobility_countdown = latest.immobility_countdown;
+        s.counted_out = latest.counted_out;
         s.winners = latest.winners;
         if latest.tick >= net.pause_barrier_tick {
             s.net_paused = latest.paused;

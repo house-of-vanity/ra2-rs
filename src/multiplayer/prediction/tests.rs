@@ -30,6 +30,8 @@ pub(super) fn source(name: &str) -> (Blueprint, Frame) {
         remaining: 300.,
         scores: [0.; 4],
         eliminated: [false; 4],
+        immobility_countdown: [0; 4],
+        counted_out: [false; 4],
         winners: [false; 4],
         bodies: r
             .bodies
@@ -94,6 +96,8 @@ fn frame(scene: &Scene, ack: u64, tick: u64) -> Frame {
         remaining: 300. - tick as f32 / 120.,
         scores: [0.; 4],
         eliminated: [false; 4],
+        immobility_countdown: [0; 4],
+        counted_out: [false; 4],
         winners: [false; 4],
         bodies: scene.poses(),
         robots: vec![scene.checkpoint(ack)],

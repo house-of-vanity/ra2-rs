@@ -14,6 +14,8 @@ fn frame() -> Frame {
         remaining: 300.,
         scores: [0.; 4],
         eliminated: [false; 4],
+        immobility_countdown: [0; 4],
+        counted_out: [false; 4],
         winners: [false; 4],
         bodies: vec![Pose {
             id: 65536,

@@ -6,6 +6,25 @@ use crate::{
 };
 use std::sync::Arc;
 
+fn immobilized_sprite(position: &str) -> ra2_formats::gib::Widget {
+    ra2_formats::gib::Widget {
+        kind: "Image".into(),
+        fields: [
+            ("Name", "immobilized sprite"),
+            ("_Filename", "common/immobile.tga"),
+            ("_Alpha", "true"),
+            ("Size", "78 0 24 0"),
+            ("Position", position),
+            ("ChildOrder", "100"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), vec![value.into()]))
+        .collect(),
+        wrapped: None,
+        children: vec![],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn input(
     mut s: ResMut<Session>,
@@ -205,7 +224,14 @@ pub(crate) fn bind(
                             .map(|p| defeated(r, p.translation))
                     })
                     .unwrap_or(true);
-                visible(&mut cell, "immobilized text", dead || s.eliminated[i]);
+                visible(
+                    &mut cell,
+                    "immobilized text",
+                    !s.counted_out[i] && (dead || s.eliminated[i]),
+                );
+                if s.counted_out[i] {
+                    cell.children.push(immobilized_sprite("389 0 57 0"));
+                }
                 visible(&mut cell, "Spectator [TextBox]", false);
                 rename(&mut cell, &format!("result{i}/"));
                 state

@@ -15,6 +15,59 @@ pub(super) struct Brain {
     obstacles: Vec<ai_tactics::Rect>,
     scan_timer: f32,
     waypoint: Option<Vec2>,
+    height_waypoint: Option<Vec2>,
+    height_timer: f32,
+    height_target: Option<u32>,
+    stuck: StuckPolicy,
+}
+
+#[derive(Default)]
+struct StuckPolicy {
+    target: Option<u32>,
+    target_position: Vec2,
+    best_distance: f32,
+    recoveries: u8,
+    recovering: bool,
+    wait: f32,
+}
+impl StuckPolicy {
+    fn update(
+        &mut self,
+        target: Option<(u32, Vec2)>,
+        position: Vec2,
+        recovering: bool,
+        dt: f32,
+    ) -> bool {
+        let Some((id, target_position)) = target else {
+            *self = Self::default();
+            return false;
+        };
+        let distance = position.distance(target_position);
+        if self.target != Some(id) || self.target_position.distance(target_position) > 1.5 {
+            *self = Self {
+                target: Some(id),
+                target_position,
+                best_distance: distance,
+                ..Default::default()
+            };
+        }
+        if distance + 0.75 < self.best_distance {
+            self.best_distance = distance;
+            self.recoveries = 0;
+        }
+        if recovering && !self.recovering && self.wait <= 0.0 {
+            self.recoveries = self.recoveries.saturating_add(1);
+            if self.recoveries >= 3 {
+                self.wait = 10.0;
+            }
+        }
+        self.recovering = recovering;
+        if self.wait > 0.0 {
+            self.wait = (self.wait - dt).max(0.0);
+            return true;
+        }
+        false
+    }
 }
 
 pub(crate) fn update(
@@ -70,6 +123,16 @@ pub(crate) fn update(
             min: [min.x, min.z],
             max: [max.x, max.z],
         });
+    let positions: BTreeMap<u32, Vec3> = session
+        .robots
+        .iter()
+        .filter_map(|robot| {
+            poses
+                .get(*robot.bodies.first()?)
+                .ok()
+                .map(|pose| (robot.id, pose.translation))
+        })
+        .collect();
     let objective = if mode == arena_core::match_rules::Mode::KingOfHill {
         session
             .arena_state
@@ -122,6 +185,10 @@ pub(crate) fn update(
             obstacles: Vec::new(),
             scan_timer: 0.0,
             waypoint: None,
+            height_waypoint: None,
+            height_timer: 0.0,
+            height_target: None,
+            stuck: StuckPolicy::default(),
         });
         brain.scan_timer -= crate::STEP as f32;
         let rescan = brain.scan_timer <= 0.0;
@@ -151,6 +218,37 @@ pub(crate) fn update(
         let forward = Vec2::from_array(me.forward).normalize_or_zero();
         let mut direction = Vec2::from_array(decision.direction).normalize_or_zero();
         let location = Vec2::from_array(me.position);
+        let self_position = positions.get(&robot.id).copied().unwrap_or(Vec3::ZERO);
+        let target = decision.target.and_then(|id| positions.get(&id).copied());
+        let waiting = brain.stuck.update(
+            decision.target.zip(target.map(|p| Vec2::new(p.x, p.z))),
+            location,
+            decision.tactic == ai_tactics::Tactic::Recover,
+            crate::STEP as f32,
+        );
+        if brain.height_target != decision.target {
+            brain.height_target = None;
+        }
+        if target.is_some_and(|target| (target.y - self_position.y).abs() > 0.65) {
+            brain.height_target = decision.target;
+        }
+        let needs_height_route = brain.height_target.is_some()
+            && target.is_some_and(|target| target.distance(self_position) > 2.5)
+            && matches!(
+                decision.tactic,
+                ai_tactics::Tactic::Attack | ai_tactics::Tactic::Flank | ai_tactics::Tactic::Avoid
+            );
+        brain.height_timer -= crate::STEP as f32;
+        if !needs_height_route {
+            brain.height_waypoint = None;
+            brain.height_timer = 0.0;
+        } else if brain.height_timer <= 0.0 {
+            brain.height_timer = 1.0;
+            brain.height_waypoint =
+                geometry.height_waypoint(self_position, target.unwrap(), |entity| {
+                    arena_poses.get(entity).ok().copied()
+                });
+        }
         if rescan {
             brain.waypoint = if matches!(
                 decision.tactic,
@@ -179,6 +277,11 @@ pub(crate) fn update(
                 brain.waypoint = None;
             }
         }
+        if let Some(waypoint) = brain.height_waypoint
+            && super::ai_obstacles::line_clear(location, waypoint, &brain.obstacles)
+        {
+            direction = (waypoint - location).normalize_or_zero();
+        }
         let dot = forward.dot(direction).clamp(-1.0, 1.0);
         let mut turn = (forward.y * direction.x - forward.x * direction.y).clamp(-1.0, 1.0);
         let reverse_allowed = matches!(
@@ -197,17 +300,53 @@ pub(crate) fn update(
                 0.0
             } else {
                 dot.max(0.25)
-            } * brain.combat_sign,
-            turn,
-            fire: decision.target.is_some(),
+            } * brain.combat_sign
+                * f32::from(!waiting),
+            turn: if waiting { 0.0 } else { turn },
+            fire: false,
         };
-        let samples = brain.controls.samples(intent);
+        let resources = (rig.electrical.capacity <= 0.0 || rig.electrical.fraction() > 0.08)
+            && (rig.pneumatic.capacity <= 0.0 || rig.pneumatic.fraction() > 0.08);
+        let (fire, spin_up) = weapon_intent(
+            self_position,
+            target,
+            forward,
+            &brain.obstacles,
+            resources && !waiting && decision.tactic != ai_tactics::Tactic::Recover,
+        );
+        let samples = brain
+            .controls
+            .samples_with_spin(ai_controls::Intent { fire, ..intent }, spin_up);
         let mut commands = robot.controls.evaluate(document, &samples);
         for (command, old) in commands.iter_mut().zip(&robot.commands) {
             command.fire |= old.fire;
         }
         robot.commands = commands;
     }
+}
+
+fn weapon_intent(
+    position: Vec3,
+    target: Option<Vec3>,
+    forward: Vec2,
+    obstacles: &[ai_tactics::Rect],
+    resources: bool,
+) -> (bool, bool) {
+    let Some(target) = target.filter(|target| target.is_finite()) else {
+        return (false, false);
+    };
+    if !position.is_finite() || !resources || (target.y - position.y).abs() > 1.0 {
+        return (false, false);
+    }
+    let from = Vec2::new(position.x, position.z);
+    let to = Vec2::new(target.x, target.z);
+    let delta = to - from;
+    let distance = delta.length();
+    if !super::ai_obstacles::line_clear(from, to, obstacles) {
+        return (false, false);
+    }
+    let facing = forward.normalize_or_zero().dot(delta.normalize_or_zero());
+    (distance <= 2.5 && facing >= 0.35, distance <= 6.0)
 }
 
 /// Native bindings explicitly specify the combat-facing side for stock robots.
@@ -289,7 +428,59 @@ fn native_combat_sign(bindings: &str, robot_name: &str) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::native_combat_sign;
+    use super::{StuckPolicy, native_combat_sign, weapon_intent};
+    use crate::battle::ai_tactics::Rect;
+    use bevy::prelude::{Vec2, Vec3};
+    #[test]
+    fn repeated_failed_recoveries_conserve_resources_until_target_moves() {
+        let mut state = StuckPolicy::default();
+        let target = Some((1, Vec2::new(5.0, 0.0)));
+        for _ in 0..2 {
+            assert!(!state.update(target, Vec2::ZERO, true, 0.1));
+            assert!(!state.update(target, Vec2::ZERO, false, 0.1));
+        }
+        assert!(state.update(target, Vec2::ZERO, true, 0.1));
+        assert!(state.update(target, Vec2::ZERO, false, 0.1));
+        assert!(!state.update(Some((1, Vec2::new(7.0, 0.0))), Vec2::ZERO, false, 0.1));
+    }
+
+    #[test]
+    fn weapon_use_depends_on_distance_facing_obstacles_and_resources() {
+        let at = Vec3::ZERO;
+        let forward = Vec2::NEG_Y;
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., -12.)), forward, &[], true),
+            (false, false)
+        );
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., -4.)), forward, &[], true),
+            (false, true)
+        );
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., -1.)), forward, &[], true),
+            (true, true)
+        );
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., 1.)), forward, &[], true),
+            (false, true)
+        );
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 2., -1.)), forward, &[], true),
+            (false, false)
+        );
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., -1.)), forward, &[], false),
+            (false, false)
+        );
+        let wall = Rect {
+            min: [-1., -0.6],
+            max: [1., -0.4],
+        };
+        assert_eq!(
+            weapon_intent(at, Some(Vec3::new(0., 0., -1.)), forward, &[wall], true),
+            (false, false)
+        );
+    }
     #[test]
     fn reads_original_combat_facing_without_running_python() {
         let bindings = "# list.append( (\"Dummy\", \"Rammer\", {'nose': math.pi}) )\nlist.append( (\"BackSlash\", \"Flipper\", { 'nose' : math.pi, 'weapons': (16, 17) }) )\nlist.append( (\"Scout\", \"Flipper\", {}) )";

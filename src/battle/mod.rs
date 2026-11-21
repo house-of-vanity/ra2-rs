@@ -9,6 +9,8 @@ pub(crate) mod arena;
 mod audio;
 mod camera;
 mod hazards;
+mod immobility;
+mod immobility_marker;
 pub(crate) mod ui;
 use crate::content::{arenas::Arena, robots::Entry};
 use crate::{
@@ -42,6 +44,9 @@ pub(crate) struct Session {
     pub mode: Mode,
     pub arena_state: arena::State,
     pub eliminated: [bool; 4],
+    pub(crate) immobility: [immobility::Immobility; 4],
+    pub immobility_countdown: [u8; 4],
+    pub counted_out: [bool; 4],
     pub winners: [bool; 4],
     pub selected: [Option<usize>; 4],
     pub minutes: u32,
@@ -83,6 +88,9 @@ impl Default for Session {
             mode: Mode::Deathmatch,
             arena_state: default(),
             eliminated: [false; 4],
+            immobility: default(),
+            immobility_countdown: [0; 4],
+            counted_out: [false; 4],
             winners: [false; 4],
             selected: [None; 4],
             minutes: 5,
@@ -206,6 +214,11 @@ impl Plugin for BattlePlugin {
                     .after(PhysicsSet::Writeback)
                     .after(crate::gameplay::damage::contacts),
             )
+            .add_systems(
+                Startup,
+                immobility_marker::setup.after(legacy_ui::assets::load),
+            )
+            .add_systems(Update, immobility_marker::update.after(Presentation))
             .add_systems(Update, hazards::animate.after(lifecycle))
             .add_systems(
                 Update,
@@ -358,6 +371,9 @@ pub(crate) fn clear(session: &mut Session, commands: &mut Commands) {
     session.hazards_runtime.clear();
     session.arena_state = default();
     session.eliminated = [false; 4];
+    session.immobility = default();
+    session.immobility_countdown = [0; 4];
+    session.counted_out = [false; 4];
     session.winners = [false; 4];
     session.impacts.clear();
     session.sound_events.clear();
@@ -612,6 +628,8 @@ pub(crate) fn step(
             let mut active = [false; 4];
             let mut eliminated = s.eliminated;
             let mode = s.mode;
+            let mut countdown = [0; 4];
+            let s = &mut *s;
             let ringout_y = s.arena_state.ringout_y;
             for r in &mut s.robots {
                 let slot = r.id as usize - 1;
@@ -621,10 +639,27 @@ pub(crate) fn step(
                 let dead = pose.is_none_or(|p| defeated(r, p.translation));
                 // Tabletop's objective is falling off; a disabled robot can still be pushed off.
                 eliminated[slot] |= ringout || (mode != Mode::TableTop && dead);
+                if mode != Mode::TableTop
+                    && !eliminated[slot]
+                    && let Some(p) = pose
+                {
+                    (countdown[slot], eliminated[slot]) =
+                        s.immobility[slot].advance(p.translation.xz());
+                    s.counted_out[slot] = eliminated[slot];
+                }
                 if eliminated[slot] || dead {
                     r.running = false;
                 }
             }
+            if countdown
+                .iter()
+                .zip(s.immobility_countdown)
+                .any(|(&now, old)| now > 0 && now != old)
+            {
+                s.sound_events
+                    .push(("Sounds/immobile_countdown.wav".into(), Vec3::ZERO));
+            }
+            s.immobility_countdown = countdown;
             s.eliminated = eliminated;
             if s.mode == Mode::KingOfHill {
                 let occupants = s
