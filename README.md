@@ -1,176 +1,21 @@
-# ra2-rs
+<p align="center">
+  <img src="assets/icons/ra2-rs-256.png" width="144" height="144" alt="ra2-rs logo">
+</p>
 
-Нативный перенос Robot Arena 2 на Rust, Bevy 0.20 и Rapier 0.37 для Windows,
-macOS и Linux. Главное меню, TEAM HQ и мастерская используют оригинальные ресурсы установленной игры.
-Синтетическая площадка с тестовой тележкой и кубами удалена.
+<h1 align="center">ra2-rs</h1>
 
-## Сборка и запуск
+**ra2-rs** is a ground-up Rust reimplementation of *Robot Arena 2: Design & Destroy* (2003). A new physics simulation and renderer bring the original robots, parts and arenas to Windows, Linux and macOS. Open a saved design in the workshop, change its wiring and take it into any of the five original Exhibition modes, from Deathmatch to King of the Hill.
 
-В [релизах](https://gt.hexor.cy/ab/ra2-rs/releases) доступны сборки для Windows x86-64, Linux x86-64 и macOS на Apple Silicon.
-Для Windows скачайте `ra2-rs-windows-x86_64.exe`. Для Linux и macOS распакуйте
-архив `.tar.gz` своей платформы, чтобы сохранить право на запуск.
-Положите полученный файл рядом с `Components.cfz` и `RA2.cfz` установленной Robot Arena 2 и запустите его.
-Для автоматической сборки пакетов в том же релизе лежат отдельные бинарники и контрольные суммы `SHA256SUMS`.
+Multiplayer was rebuilt from scratch. Your robot responds to your controls immediately, while the game smooths out movement between network updates. To play online, choose **Iroh native networking** and share the eight-digit room code with a friend. One player hosts the match, with no dedicated game server to run or ports to forward.
 
-Для сборки из исходников выполните в каталоге `ra2-rs`
+## Downloads
 
-```bash
-cargo build --release --locked
-./target/release/ra2-rs --game-dir "/path/to/Robot Arena 2"
-```
+| Platform | v0.1.0-rc1 |
+| --- | --- |
+| Windows · x86-64 | [Download the executable](https://github.com/house-of-vanity/ra2-rs/releases/download/v0.1.0-rc1/ra2-rs-windows-x86_64.exe) |
+| macOS · Apple Silicon | [Download the archive](https://github.com/house-of-vanity/ra2-rs/releases/download/v0.1.0-rc1/ra2-rs-macos-arm64.tar.gz) |
+| Linux · x86-64 | [Download the archive](https://github.com/house-of-vanity/ra2-rs/releases/download/v0.1.0-rc1/ra2-rs-linux-x86_64.tar.gz) |
 
-- **Windows.** Запускайте `target\release\ra2-rs.exe`. Значок встроен в EXE.
-- **macOS.** После сборки запустите `python3 tools/package-desktop.py macos`.
-  Приложение `target/release/ra2-rs.app` можно открыть в Finder и закрепить в Dock.
-- **Linux.** Для меню приложений и панели Wayland запустите
-  `python3 tools/package-desktop.py linux /полный/путь/к/ra2-rs`, указав
-  постоянное расположение готового бинарника. Скрипт установит ярлык и значок
-  в каталог данных текущего пользователя.
+Unpack the archive on macOS or Linux. Place the executable next to `RA2.cfz` and `Components.cfz` in your existing game folder and launch it in place of the original game executable.
 
-Для сборки нужны Rust/Cargo 1.97.1+ и системный компилятор. На Linux также нужны
-`pkg-config` и библиотеки разработки ALSA, Wayland и xkbcommon. Для Debian/Ubuntu установите
-`build-essential pkg-config libasound2-dev libwayland-dev libxkbcommon-dev`.
-Оба оконных backend собираются вместе, даже если запускать игру через X11.
-На NixOS: `nix-shell --run 'cargo build --release --locked'`.
-`./run.sh` собирает и запускает приложение в окружении Nix.
-
-Готовый файл `target/release/ra2-rs` можно положить прямо в папку игры,
-рядом с `Components.cfz`, `RA2.cfz`, `UI`, `Components` и `Arenas`, и запускать
-без аргументов. Исходники, Rust, скрипт и папка `config` при запуске не нужны.
-Другой вариант — `--game-dir PATH` или переменная `RA2_GAME_DIR`.
-Явный аргумент имеет приоритет. Автопоиск проверяет папку бинарника, рабочую
-папку и соседнюю установку `RobotArena2` при разработке.
-
-Релизный Linux-бинарник собирается на Ubuntu 22.04 и проходит проверку запуска
-в контейнерах Ubuntu 22.04, Debian 12 и Arch Linux. Игра использует системные
-библиотеки звука и оконной системы, графический драйвер и ресурсы вашей установки Robot Arena 2.
-
-Конфигурация физики и меню встроена. Настройки хранятся в
-`GAME/.ra2-rs/settings.ron`. Путь можно задать через `--settings-file FILE`.
-`GAME/.ra2-rs/menu.ron` позволяет заменить встроенную раскладку меню.
-`--config FILE` заменяет встроенный `config/game.ron`.
-
-## Exhibition
-
-**EXHIBITION → Game Type / Arena / Robots → Start Game**.
-
-- Все пять штатных режимов: **Deathmatch** (два участника), **Battle Royal**
-  (три–четыре), **Teams** (две пары), **Tabletop** и **King of the Hill** (два–четыре).
-- Все 12 игровых арен: Combat Arena, Bridge of Doom, ClawTop, Compressor Arena,
-  Electric Arena, FlexTop, Half Circle Arena, Hill Top Arena, LumaZone,
-  Metal Skull, Parking Lot и The Octagon. Список фильтруется по режиму,
-  как в исходных описаниях игры. Event Results — сцена церемонии, не игровая арена.
-- Первый слот управляется игроком по Wiring выбранного BOT. Остальные роботы
-  управляются ИИ: используют проводку и оружие, выбирают противников, обходят
-  препятствия и учитывают ловушки и цель режима King of the Hill.
-  Дополнительные слоты можно заполнять и освобождать в штатных карточках.
-- Выбор времени, класса веса, ловушек, роботов пользовательских и AI-команд.
-  После сохранения в мастерской каталог перечитывается при входе в Exhibition.
-- Перед боем — оригинальные пролёты и представления участников из сценария
-  выбранной арены, музыка и реплики диктора. **Skip**, Space или Enter пропускают
-  вступление. Затем три сигнала отсчёта и команда старта; до неё физика остановлена,
-  в том числе платформа FlexTop. Таймер и повреждения начинают работать в бою.
-- Общие с гаражом HP, вмятины, отрыв колёс и сборок. Контактный урон использует
-  материалы и CFZ `concussion`/`piercing`; попадание по навесной детали не списывает
-  половину HP с корпуса. Числа рисуются плавным GPU-текстом с учётом DPI:
-  красные — полученный урон, зелёные — нанесённый игроком.
-  Очки за снятые HP получает источник попадания. Отдача не даёт цели ответных
-  очков, удары о стены и по напарнику очков не дают.
-- Deathmatch/Battle Royal/Teams: разрушение корпуса или контроллера,
-  выпадение за арену; при истечении времени — очки. Teams объединяет очки
-  партнёров и объявляет победителями обоих. Пассивность не считается поражением.
-- Tabletop: выбывание при падении с платформы, затем последний оставшийся
-  участник или очки по времени. King of the Hill: 10 очков каждые 0,5 секунды
-  за единоличное удержание исходной зоны; боевой урон очков не добавляет.
-- Ловушки: шипы, пилы, молоты, HellRaiser, прессы, открывающиеся полы,
-  падающие блоки, огонь, электричество, вращающиеся захваты и упругая платформа
-  FlexTop. GMF задаёт геометрию, прокси, шарниры и старты; Python-файлы — зоны,
-  таймеры, параметры и штатные звуки. Python не требуется и не исполняется.
-- Частицы огня используют исходную текстуру; разряды — ограниченный пул
-  процедурных сегментов. Звуки WAV кешируются, число голосов ограничено.
-- По умолчанию включена **Automatic Camera**: плавно следует за роботом
-  с большей дистанции. **F3** переключает её на прежнюю **Player Camera**
-  с вращением правой кнопкой мыши и обратно. Колесо меняет дистанцию отдельно
-  для каждого режима. Esc ставит бой на паузу. Continue после результатов
-  возвращает к настройке матча.
-
-Это перенос на другой физический движок: силы ловушек, упругость FlexTop,
-постоянный режущий урон и определение источника контакта требуют дальнейшей
-калибровки по оригиналу. Судейство и все исходные условия иммобилизации
-пока не воспроизведены. В этой установке
-также отсутствует указанная в модели Octagon текстура `light_flare_diffuse.tga`: эти
-материалы используют базовый цвет, остальные текстуры арены загружаются штатно.
-
-## TEAM HQ и мастерская
-
-**TEAM HQ → выбрать/создать команду → выбрать робота → Edit Robot**.
-Команды и роботы сохраняются в штатных форматах игры. Мастерская содержит
-Overview, Chassis, Components, Wiring, Paint Shop и Test Robot.
-Детали и механизмы в Test Robot используют тот же игровой runtime, что Exhibition.
-
-Прямое открытие BOT:
-
-```bash
-cargo run -- --game-dir ../RobotArena2 --editor-file "../RobotArena2/Teams/Team0/Bot0.bot"
-```
-
-Правая кнопка вращает вид, колесо приближает. При установке Shift поворачивает
-деталь, Ctrl меняет высоту. Wiring позволяет назначать клавиши, связывать их
-с деталями и проверять движения прямо в редакторе. Burst Motor имеет настройку
-начальной позы и хода. Draw Freeform поддерживает построение контура по точкам.
-
-Отдельные лаборатории повреждений доступны разработчику через `--damage-demo`
-и `--destruction-demo`; к удалённой тестовой тележке они отношения не имеют.
-
-## Multiplayer
-
-Для игры через интернет выберите **Multiplayer → Create Game → Iroh native networking**.
-В меню сразу появятся восемь цифр, например `0427-9136`. Нажмите **Start Game**,
-продиктуйте код другу. Друг вводит его в **Join by code**. Кнопка **EndpointID**
-под кодом копирует полный идентификатор для вставки в то же поле. Проброс портов
-не требуется. Каждый выбирает робота и включает **Ready**, затем хост нажимает **Begin Match**.
-
-Для локальной сети выберите **Local network only**. Войти можно через
-**Refresh / Join Game** или **IP Connect**. Игра по IP использует UDP 27666,
-поиск LAN — UDP 27667. Для двух окон на одном компьютере подходит `127.0.0.1`.
-Собственный робот клиента предсказывается локально на штатной физической сборке;
-снимки хоста подтверждают ввод и запускают сверку/replay. Удалённые роботы
-интерполируются. F4 показывает сетевые показатели и ошибки prediction.
-Exhibition остаётся одиночным режимом. Esc открывает меню; общий матч может
-приостановить только хост отдельной кнопкой. При возвращении с результатов
-хост переводит всех в лобби. Подробности и ограничения игрового адаптера —
-в [MULTIPLAYER.md](docs/MULTIPLAYER.md#игровой-multiplayer-по-ip).
-
-## Сетевой каркас
-
-Сетевой каркас отдельно от графики и игровых ассетов:
-
-```bash
-cargo test --locked -p arena-net -p arena-net-io -p arena-net-lab
-cargo run --locked -p arena-net-lab -- --out logs/net-report
-```
-
-Стенд проверяет Rapier-сборки для 2/4 участников через пакетный слой Lightyear
-при RTT 0–200 мс, потерях, джиттере, ограничении полосы и коротком обрыве.
-CSV содержит ошибки, коррекции, трафик, CPU и отдельные трассы по тикам.
-Установка оригинальной игры и запуск окна не нужны. Графический IP-режим проверяется отдельно через `--multiplayer-check`. [Архитектура, критерии и границы проверок](docs/MULTIPLAYER.md).
-
-## Структура
-
-- `arena-core`: форматы независимых данных, сборки, механизмы, здоровье,
-  дешёвые вмятины и правила завершения матча; без ECS/GPU.
-- `ra2-formats`: чтение GMI/GMA, BOT, CFZ, GIB/GIFF и штатных команд.
-- `arena-runtime`: рендеринг и адаптеры физических данных.
-- `src/gameplay`: общая сборка роботов, моторы, массы, сцепление, HP и отрыв.
-- `src/garage`: жизненный цикл штатной площадки Test Robot и её интерфейс.
-- `src/exhibition`: настройка матча, арена/ловушки, камера, звук и результаты.
-- `src/content`: каталог оригинальных роботов для игровых режимов.
-
-[Архитектура](docs/ARCHITECTURE.md), [BOT](docs/BOT_FORMAT.md),
-[GMI](docs/GMI_FORMAT.md), [аудит интерфейса](docs/NATIVE_UI_AUDIT.md),
-[аудит очков](docs/NATIVE_SCORING_AUDIT.md).
-
-Для разработчика: `cargo test --workspace --locked` проверяет независимую логику;
-проверки с локальными ассетами помечены `#[ignore]`. `--exhibition-check` —
-offscreen-проверка настоящего интерфейса, боя, результатов и очистки сцены;
-`--workshop-check` — аналогичная проверка мастерской. Они сохраняют снимки в `logs`.
+[All releases](https://github.com/house-of-vanity/ra2-rs/releases)

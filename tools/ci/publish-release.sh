@@ -21,41 +21,45 @@ done
 sha256sum "${files[@]}" > SHA256SUMS
 files+=(SHA256SUMS)
 
-api="${GITHUB_API_URL%/}/repos/$GITHUB_REPOSITORY/releases"
-download="${GITHUB_SERVER_URL%/}/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
-auth="Authorization: token ${RELEASE_TOKEN:?}"
-body="Скачайте [Windows x86-64]($download/ra2-rs-windows-x86_64.exe), [Linux x86-64]($download/ra2-rs-linux-x86_64.tar.gz) или [macOS ARM64]($download/ra2-rs-macos-arm64.tar.gz). На Linux и macOS извлеките файл из архива, чтобы сохранить право на запуск."
-body+=$'\n\n'
-body+='Положите исполняемый файл рядом с Components.cfz и RA2.cfz установленной Robot Arena 2 и запустите его. Для сборки установщиков доступны отдельные бинарники и SHA256SUMS.'
+export GH_REPO=${GITHUB_REPOSITORY:?}
+tag=${RELEASE_TAG:?}
+download="$GITHUB_SERVER_URL/$GH_REPO/releases/download/$tag"
+cat > notes.md <<NOTES
+| Platform | Download |
+| --- | --- |
+| Windows x86-64 | [Executable]($download/ra2-rs-windows-x86_64.exe) |
+| macOS Apple Silicon | [Archive]($download/ra2-rs-macos-arm64.tar.gz) |
+| Linux x86-64 | [Archive]($download/ra2-rs-linux-x86_64.tar.gz) |
 
-request() { curl --silent --show-error --fail-with-body -H "$auth" "$@"; }
-status=$(curl --silent --show-error -H "$auth" -o release.json -w '%{http_code}' "$api/tags/$RELEASE_TAG")
-case "$status" in
-  404)
-    jq -n --arg tag "$RELEASE_TAG" --arg body "$body" \
-      '{tag_name: $tag, name: ("ra2-rs " + $tag), body: $body, draft: true, prerelease: ($tag | contains("-"))}' > create.json
-    request -H 'Content-Type: application/json' --data-binary @create.json "$api" > release.json
-    ;;
-  200) ;;
-  *) echo "Release lookup returned HTTP $status" >&2; exit 1 ;;
-esac
-id=$(jq -er '.id' release.json)
-if [[ $(jq -r '.draft' release.json) == false ]]; then
-  # A repeated run must never mix two different builds under a public tag.
-  request -L "$download/SHA256SUMS" | cmp - SHA256SUMS
-  for file in "${files[@]}"; do
-    jq -e --arg file "$file" 'any(.assets[]; .name == $file)' release.json >/dev/null
-  done
-  exit 0
+Extract the archive on macOS or Linux. Place the executable beside RA2.cfz and Components.cfz in your Robot Arena 2 installation and launch it. The standalone binaries and SHA256SUMS are also available below.
+NOTES
+
+if ! draft=$(gh release view "$tag" --json isDraft --jq '.isDraft'); then
+  flags=(--draft --verify-tag)
+  if [[ "$tag" == *-* ]]; then flags+=(--prerelease); fi
+  gh release create "$tag" "${flags[@]}" --title "ra2-rs $tag" --notes-file notes.md
+  draft=true
 fi
 
+if [[ "$draft" == true ]]; then
+  gh release upload "$tag" "${files[@]}" --clobber
+else
+  # On a rerun, validate the bytes that are already public.
+  gh release download "$tag" --pattern SHA256SUMS --dir published
+  cp published/SHA256SUMS SHA256SUMS
+fi
+
+gh release view "$tag" --json assets > uploaded.json
 for file in "${files[@]}"; do
-  # A previous attempt may have stopped partway through this draft.
-  previous=$(jq -r --arg file "$file" '.assets[]? | select(.name == $file) | .id' release.json)
-  if [[ -n "$previous" ]]; then request -X DELETE "$api/$id/assets/$previous" >/dev/null; fi
-  request -F "attachment=@$file" "$api/$id/assets?name=$file" > uploaded.json
-  jq -e --arg name "$file" --argjson size "$(stat -c %s "$file")" \
-    '.name == $name and .size == $size' uploaded.json >/dev/null
+  if [[ "$file" == SHA256SUMS ]]; then
+    digest=$(sha256sum SHA256SUMS | cut -d' ' -f1)
+  else
+    digest=$(awk -v name="$file" '$2 == name {print $1}' SHA256SUMS)
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+  jq -e --arg name "$file" --arg digest "sha256:$digest" \
+    'any(.assets[]; .name == $name and .state == "uploaded" and .digest == $digest)' uploaded.json >/dev/null
 done
-request -X PATCH -H 'Content-Type: application/json' -d '{"draft":false}' "$api/$id" \
-  | jq -er 'select(.draft == false) | .html_url'
+
+if [[ "$draft" == true ]]; then gh release edit "$tag" --draft=false; fi
+gh release view "$tag" --json url --jq '.url'
