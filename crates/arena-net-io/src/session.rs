@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub enum Notice {
     Connected(u8),
     Roster(Settings, Vec<Player>, u64),
+    StartAvailable(bool),
     Bot(Digest, Vec<u8>),
     Prepare(u64),
     Begin(u64),
@@ -67,6 +68,7 @@ pub struct Node {
     last_seen: BTreeMap<PeerId, u64>,
     last_ping: u64,
     loading_since: Option<u64>,
+    start_available: bool,
 }
 fn empty(slot: u8) -> Player {
     Player {
@@ -106,9 +108,19 @@ impl Node {
             last_seen: BTreeMap::new(),
             last_ping: 0,
             loading_since: None,
+            start_available: false,
         })
     }
     pub fn add_peer(&mut self, peer: PeerId, session: SessionId, now: u64) -> Result<()> {
+        self.add_peer_with_mtu(peer, session, now, arena_net::transport::MTU)
+    }
+    pub(crate) fn add_peer_with_mtu(
+        &mut self,
+        peer: PeerId,
+        session: SessionId,
+        now: u64,
+        mtu: usize,
+    ) -> Result<()> {
         if self.stage != Stage::Lobby || peer == self.local || self.links.contains_key(&peer) {
             return Err(Error::Phase);
         }
@@ -119,7 +131,7 @@ impl Node {
             return Err(Error::Limit);
         }
         self.links
-            .insert(peer, LinkEndpoint::new(self.local, peer, session));
+            .insert(peer, LinkEndpoint::with_mtu(self.local, peer, session, mtu));
         self.last_seen.insert(peer, now);
         self.installed.insert(peer, BTreeSet::new());
         if self.local == HOST {
@@ -374,8 +386,13 @@ impl Node {
             .players
             .get_mut(&(peer.0 as u8))
             .ok_or(Error::Unauthorized)?;
-        if value && (p.size == 0 || !self.bots.contains_key(&p.digest)) {
+        // A player can confirm their selection while the BOT is uploading.
+        // can_start separately requires its verified installation on every peer.
+        if value && p.size == 0 {
             return Err(Error::Incompatible);
+        }
+        if p.ready == value {
+            return Ok(());
         }
         p.ready = value;
         self.roster()
@@ -732,6 +749,11 @@ impl Node {
             .collect::<Vec<_>>()
         {
             self.drop_peer(peer, "Connection timed out")?;
+        }
+        let available = self.can_start();
+        if available != self.start_available {
+            self.start_available = available;
+            self.notices.push_back(Notice::StartAvailable(available));
         }
         if self.notices.len() > 1024 {
             return Err(Error::Limit);

@@ -13,9 +13,7 @@ target/
 
 # Runtime output, captures and machine-specific preferences.
 /logs/
-.open-arena/
-/config/user-settings.ron
-/config/user-settings.ron.tmp
+.ra2-rs/
 
 # Original game content, if copied into the project for local testing.
 /RobotArena2/

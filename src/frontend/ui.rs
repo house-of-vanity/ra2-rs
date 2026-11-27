@@ -20,6 +20,8 @@ pub(super) struct ScaledFont(f32);
 pub(super) struct SettingsPanel;
 #[derive(Component)]
 pub(super) struct StatusText;
+#[derive(Component)]
+pub(super) struct MenuVersion;
 #[derive(Resource, Default)]
 pub struct Status(pub String);
 
@@ -138,6 +140,28 @@ pub(super) fn setup(mut commands: Commands, assets: Res<MenuAssets>) {
             Msaa::Off,
         ))
         .id();
+    commands.spawn((
+        MenuVersion,
+        UiTargetCamera(camera),
+        GlobalZIndex(30),
+        bevy::picking::Pickable::IGNORE,
+        Node {
+            position_type: PositionType::Absolute,
+            right: px(9),
+            bottom: px(5),
+            ..default()
+        },
+        Text::new(concat!("v", env!("CARGO_PKG_VERSION"))),
+        TextFont {
+            font_size: FontSize::Px(12.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.82, 0.82, 0.82)),
+        bevy::ui::widget::TextShadow {
+            offset: Vec2::ONE,
+            color: Color::BLACK,
+        },
+    ));
     let root_node = || Node {
         position_type: PositionType::Absolute,
         width: percent(100),
@@ -624,11 +648,19 @@ pub(super) fn refresh(
     draft: Res<Draft>,
     status: Res<Status>,
     mut roots: Query<(&Screen, &mut Node)>,
+    mut version: Single<&mut Visibility, With<MenuVersion>>,
     mut values: Query<(&ValueText, &mut Text), Without<StatusText>>,
     mut notes: Query<&mut Text, With<StatusText>>,
     mut host_pause: Query<(&Action, &mut Node), Without<Screen>>,
     battle: Res<crate::battle::Session>,
 ) {
+    if nav.is_changed() {
+        **version = if nav.page == Page::Match {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
     for (action, mut node) in &mut host_pause {
         if matches!(action, Action::HostPause) {
             node.display = if battle.network && battle.authority {

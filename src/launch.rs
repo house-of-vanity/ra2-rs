@@ -5,18 +5,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const USAGE: &str =
-    "Usage: physics-demo [--game-dir PATH] [--editor|--damage-demo|--destruction-demo]
+pub(crate) const USAGE: &str = concat!(
+    "Usage: ",
+    env!("CARGO_PKG_NAME"),
+    " [--game-dir PATH] [--editor|--damage-demo|--destruction-demo]
 
 Open the original main menu, Exhibition and TEAM HQ by default.
 Game files are found beside this executable or in the current directory.
 --game-dir PATH / RA2_GAME_DIR selects an installed Robot Arena 2.
 --config FILE overrides embedded game settings; --settings-file FILE overrides preferences.
 --editor-file BOT opens a robot in the workshop.
---help, --version require no assets.
+--help, --version and --font-license require no assets.
 Developer checks: --workshop-check, --exhibition-check, --multiplayer-check, --editor-smoke-test,
 --damage-check, --destruction-check, --smoke-test.
-";
+"
+);
 
 struct Locations {
     cwd: PathBuf,
@@ -47,14 +50,15 @@ impl Locations {
             return validate_game(&path);
         }
         let mut candidates = Vec::new();
-        if let Some(parent) = self.executable.as_deref().and_then(Path::parent) {
+        let install_dir = self.executable.as_deref().and_then(install_directory);
+        if let Some(parent) = install_dir {
             candidates.push(parent.to_owned());
             candidates.push(parent.join("RobotArena2"));
         }
         candidates.extend([self.cwd.clone(), self.cwd.join("RobotArena2")]);
         // Development builds in target/{debug,release} also work without a
         // path compiled into the executable. Installed binaries need no repo.
-        if let Some(parent) = self.executable.as_deref().and_then(Path::parent) {
+        if let Some(parent) = install_dir {
             candidates.extend(
                 parent
                     .ancestors()
@@ -76,8 +80,21 @@ impl Locations {
         if !required {
             return Ok(self.cwd.clone());
         }
-        Err("Robot Arena 2 game files were not found. Put physics-demo beside Components.cfz and RA2.cfz, or run: physics-demo --game-dir /path/to/RobotArena2".into())
+        let app = env!("CARGO_PKG_NAME");
+        Err(format!(
+            "Robot Arena 2 game files were not found. Put {app} beside Components.cfz and RA2.cfz, or run {app} --game-dir /path/to/RobotArena2"
+        ))
     }
+}
+fn install_directory(executable: &Path) -> Option<&Path> {
+    let directory = executable.parent()?;
+    if directory.ends_with("Contents/MacOS")
+        && let Some(bundle) = directory.parent().and_then(Path::parent)
+        && bundle.extension().is_some_and(|ext| ext == "app")
+    {
+        return bundle.parent();
+    }
+    Some(directory)
 }
 fn is_game(path: &Path) -> bool {
     ["Components.cfz", "RA2.cfz"]
@@ -164,7 +181,7 @@ impl Options {
             }
         }
         o.game_dir = locations.game_root(game, true)?;
-        o.settings_file = settings.unwrap_or_else(|| o.game_dir.join(".open-arena/settings.ron"));
+        o.settings_file = settings.unwrap_or_else(|| o.game_dir.join(".ra2-rs/settings.ron"));
         Ok(o)
     }
 }
@@ -183,7 +200,7 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&p).unwrap();
-            Self(p)
+            Self(std::fs::canonicalize(p).unwrap())
         }
         fn game(&self, name: impl AsRef<Path>) -> PathBuf {
             let p = self.0.join(name);
@@ -198,7 +215,7 @@ mod tests {
         fn locations(&self) -> Locations {
             Locations {
                 cwd: self.0.clone(),
-                executable: Some(self.0.join("engine/physics-demo")),
+                executable: Some(self.0.join("engine/ra2-rs")),
                 environment_game: None,
             }
         }
@@ -216,12 +233,12 @@ mod tests {
         let s = Sandbox::new();
         let game = s.game("Игра друга");
         let mut paths = s.locations();
-        paths.executable = Some(game.join("physics-demo"));
+        paths.executable = Some(game.join("ra2-rs"));
         let o = parse(&[], &paths).unwrap();
         assert!(!o.editor && !o.damage_demo);
         assert_eq!(o.game_dir, game);
         assert_eq!(o.config, Path::new("@embedded"));
-        assert_eq!(o.settings_file, game.join(".open-arena/settings.ron"));
+        assert_eq!(o.settings_file, game.join(".ra2-rs/settings.ron"));
     }
     #[test]
     fn game_argument_beats_environment_and_executable_and_relocates_settings() {
@@ -230,11 +247,11 @@ mod tests {
         let env_game = s.game("env");
         let chosen = s.game("other game");
         let mut paths = s.locations();
-        paths.executable = Some(exe_game.join("physics-demo"));
+        paths.executable = Some(exe_game.join("ra2-rs"));
         paths.environment_game = Some(env_game);
         let o = parse(&["--game-dir", "other game"], &paths).unwrap();
         assert_eq!(o.game_dir, chosen);
-        assert_eq!(o.settings_file, chosen.join(".open-arena/settings.ron"));
+        assert_eq!(o.settings_file, chosen.join(".ra2-rs/settings.ron"));
         assert_eq!(o.config, Path::new("@embedded"));
         let o = parse(
             &[
@@ -267,8 +284,20 @@ mod tests {
         let s = Sandbox::new();
         let game = s.game("RobotArena2");
         let mut paths = s.locations();
-        paths.executable = Some(s.0.join("physics-demo/target/release/physics-demo"));
+        paths.executable = Some(s.0.join("ra2-rs/target/release/ra2-rs"));
         assert_eq!(parse(&[], &paths).unwrap().game_dir, game);
+    }
+    #[test]
+    fn finder_bundle_finds_game_files_beside_it() {
+        let s = Sandbox::new();
+        let game = s.game("Installed Game");
+        let mut paths = s.locations();
+        paths.executable = Some(game.join("ra2-rs.app/Contents/MacOS/ra2-rs"));
+        assert_eq!(parse(&[], &paths).unwrap().game_dir, game);
+
+        let sibling = s.game("Install/RobotArena2");
+        paths.executable = Some(s.0.join("Install/ra2-rs.app/Contents/MacOS/ra2-rs"));
+        assert_eq!(parse(&[], &paths).unwrap().game_dir, sibling);
     }
     #[test]
     fn missing_and_invalid_games_fail_before_engine_startup() {
@@ -313,7 +342,7 @@ mod tests {
         assert!(parse(&["--damage-demo"], &paths).unwrap().damage_demo);
         assert!(parse(&["--game-dir"], &paths).is_err());
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_game_paths_do_not_require_utf8() {
         use std::os::unix::ffi::OsStringExt;

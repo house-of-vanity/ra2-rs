@@ -563,6 +563,7 @@ fn sync(
     ui.attachments.clear();
     ui.checked.clear();
     ui.disabled.clear();
+    ui.read_only.clear();
     ui.interactive.clear();
     ui.images.clear();
     ui.colors.clear();
@@ -642,7 +643,18 @@ fn sync(
             Dialog::Event(_) => "teamhq/joinevent.gib",
             _ => "common/messagebox.gib",
         };
-        if let Ok(w) = assets.widget(file) {
+        if let Ok(mut w) = assets.widget(file) {
+            if matches!(dialog, Dialog::Team(_)) {
+                // Teams.txt stores each motto on one physical line. Keep visual wrapping.
+                editor::panels::patch(
+                    std::sync::Arc::make_mut(&mut w),
+                    "team motto input textbox",
+                    "AllowNewlines",
+                    "false",
+                );
+            } else if matches!(dialog, Dialog::Help) {
+                ui.read_only.insert("New [TextBox]".into());
+            }
             ui.dialogs.push(w);
         }
         match dialog {

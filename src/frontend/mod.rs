@@ -114,6 +114,7 @@ impl Plugin for FrontendPlugin {
 }
 
 fn keyboard(
+    ui: Res<crate::legacy_ui::State>,
     keys: Res<ButtonInput<KeyCode>>,
     options: Res<Options>,
     mut nav: ResMut<Navigation>,
@@ -123,7 +124,9 @@ fn keyboard(
     if options.smoke_test || options.editor_smoke_test {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) {
+    if keys.just_pressed(KeyCode::Escape)
+        && !(nav.legacy_visible() && nav.page != Page::Settings && !ui.focused.is_empty())
+    {
         nav.page = match nav.page {
             Page::Settings => nav.back,
             Page::Pause => Page::Match,

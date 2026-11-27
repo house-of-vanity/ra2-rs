@@ -12,11 +12,27 @@ pub struct Glyph {
 pub struct BitmapFont {
     pub line_height: i32,
     pub baseline: i32,
+    /// Visible ink above and below the baseline, excluding transparent atlas padding.
+    pub ascent: i32,
+    pub descent: i32,
     pub space: i32,
     pub width: usize,
     pub height: usize,
     pub rgba: Vec<u8>,
     pub glyphs: BTreeMap<char, Glyph>,
+}
+impl BitmapFont {
+    pub fn glyph(&self, ch: char) -> Option<&Glyph> {
+        self.glyphs.get(&ch).or_else(|| self.glyphs.get(&'?'))
+    }
+
+    pub fn advance(&self, ch: char) -> f32 {
+        self.glyph(ch).map_or(0, |g| g.advance) as f32
+    }
+
+    pub fn measure(&self, text: &str) -> f32 {
+        text.chars().map(|c| self.advance(c)).sum()
+    }
 }
 fn word(bytes: &[u8], offset: usize) -> Result<[u8; 4], String> {
     bytes
@@ -31,7 +47,7 @@ pub fn decode(bytes: &[u8]) -> Result<BitmapFont, String> {
     const RECORD: usize = 28;
     let integer = |offset| Ok::<i32, String>(i32::from_le_bytes(word(bytes, offset)?));
     let line_height = integer(0)?;
-    let baseline = -integer(4)?;
+    let baseline = integer(4)?.checked_neg().ok_or("Invalid GIFF baseline")?;
     let space = integer(8)?;
     let width = integer(16)?;
     let height = integer(20)?;
@@ -54,13 +70,17 @@ pub fn decode(bytes: &[u8]) -> Result<BitmapFont, String> {
         {
             return Err("Invalid GIFF glyph UV".into());
         }
+        let top = integer(offset + 24)?;
+        if !(-4096..=4096).contains(&top) {
+            return Err("Invalid GIFF glyph bearing".into());
+        }
         glyphs.insert(
             char::from(i as u8 + 32),
             Glyph {
                 uv,
                 advance: integer(offset + 16)?,
                 left: integer(offset + 20)?,
-                top: integer(offset + 24)?,
+                top,
             },
         );
     }
@@ -98,9 +118,26 @@ pub fn decode(bytes: &[u8]) -> Result<BitmapFont, String> {
             ]);
         }
     }
+    let mut ascent = 0;
+    let mut descent = 0;
+    for g in glyphs.values() {
+        let x0 = (g.uv[0] * width as f32).round() as usize;
+        let x1 = (g.uv[2] * width as f32).round() as usize;
+        let y0 = (g.uv[1] * height as f32).round() as usize;
+        let y1 = (g.uv[3] * height as f32).round() as usize;
+        for y in y0..y1 {
+            if (x0..x1).any(|x| rgba[(y * width + x) * 4 + 3] != 0) {
+                let row = (y - y0) as i32 - g.top;
+                ascent = ascent.max(-row);
+                descent = descent.max(row + 1);
+            }
+        }
+    }
     Ok(BitmapFont {
         line_height,
         baseline,
+        ascent,
+        descent,
         space,
         width,
         height,

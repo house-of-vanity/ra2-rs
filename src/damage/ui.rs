@@ -1,12 +1,16 @@
 use super::*;
 use bevy::{
-    input::{ButtonState, keyboard::KeyboardInput},
+    input_focus::{FocusCause, InputFocus},
     picking::{Pickable, hover::Hovered},
+    text::{EditableText, TextCursorStyle},
     ui_widgets::{
         Activate, ActivateOnPress, Button, Slider, SliderPrecision, SliderRange, SliderStep,
-        SliderThumb, SliderValue, TrackClick, ValueChange,
+        SliderThumb, SliderValue, TextInput, TrackClick, ValueChange,
     },
 };
+#[derive(Component)]
+pub(super) struct RobotSearch;
+
 const PAGE: usize = 8;
 const LEFT: f32 = 270.0;
 const RIGHT: f32 = 340.0;
@@ -14,7 +18,6 @@ const RIGHT: f32 = 340.0;
 pub(super) enum Action {
     Slot(usize),
     Page(i32),
-    Search,
     Clear,
     Wire,
     Shading,
@@ -47,7 +50,6 @@ pub(super) enum Control {
 }
 #[derive(Component)]
 pub(super) enum Label {
-    Search,
     Slot(usize),
     Page,
     Robot,
@@ -328,8 +330,30 @@ pub(super) fn setup(mut commands: Commands, lab: Res<Lab>) {
     heading(&mut commands, left, "ROBOT DAMAGE LAB");
     let name = text(&mut commands, left, "", 18.);
     commands.entity(name).insert(Label::Robot);
-    let search = button(&mut commands, left, "Search", Action::Search);
-    commands.entity(search).insert(Label::Search);
+    text(&mut commands, left, "Search robots", 12.);
+    commands.spawn((
+        RobotSearch,
+        TextInput,
+        EditableText {
+            allow_newlines: false,
+            max_characters: Some(64),
+            ..default()
+        },
+        TextLayout::no_wrap(),
+        TextFont::from_font_size(14.),
+        TextCursorStyle::default(),
+        Node {
+            min_height: px(30),
+            padding: UiRect::axes(px(6), px(5)),
+            border: px(1).all(),
+            flex_shrink: 0.,
+            overflow: Overflow::clip(),
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.06, 0.09, 0.12)),
+        BorderColor::all(Color::srgb(0.24, 0.31, 0.38)),
+        ChildOf(left),
+    ));
     let r = row(&mut commands, left);
     button(&mut commands, r, "Clear", Action::Clear);
     button(&mut commands, r, "<", Action::Page(-1));
@@ -530,6 +554,8 @@ pub(super) fn range_visuals(
 pub(super) fn activate(
     event: On<Activate>,
     actions: Query<&Action>,
+    mut search: Single<&mut EditableText, With<RobotSearch>>,
+    mut focus: ResMut<InputFocus>,
     catalogue: Res<content::Catalogue>,
     mut lab: ResMut<Lab>,
     mut exit: MessageWriter<crate::shutdown::ExitRequest>,
@@ -542,15 +568,15 @@ pub(super) fn activate(
             let matches = catalogue.matching(&lab.filter);
             if let Some(&i) = matches.get(lab.page * PAGE + slot) {
                 lab.selection = i;
-                lab.search_focus = false;
+                focus.clear();
             }
         }
         Action::Page(d) => {
             let pages = catalogue.matching(&lab.filter).len().div_ceil(PAGE).max(1);
             lab.page = (lab.page as i32 + d).rem_euclid(pages as i32) as usize;
         }
-        Action::Search => lab.search_focus = !lab.search_focus,
         Action::Clear => {
+            search.clear();
             lab.filter.clear();
             lab.page = 0;
         }
@@ -583,38 +609,28 @@ pub(super) fn activate(
 }
 pub(super) fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
-    mut input: MessageReader<KeyboardInput>,
+    search: Single<(Entity, &EditableText), With<RobotSearch>>,
+    mut focus: ResMut<InputFocus>,
     mut lab: ResMut<Lab>,
     mut exit: MessageWriter<crate::shutdown::ExitRequest>,
 ) {
-    let was_focused = lab.search_focus;
-    if keys.just_pressed(KeyCode::Slash) {
-        lab.search_focus = true;
+    let (field, text) = *search;
+    if text.value() != lab.filter.as_str() {
+        lab.filter = text.value().to_string();
+        lab.page = 0;
     }
+    let was_focused = lab.search_focus;
+    lab.search_focus = focus.get() == Some(field);
     if lab.search_focus {
-        for event in input.read().filter(|e| e.state == ButtonState::Pressed) {
-            match event.key_code {
-                KeyCode::Backspace => {
-                    lab.filter.pop();
-                    lab.page = 0;
-                }
-                KeyCode::Enter | KeyCode::Escape => lab.search_focus = false,
-                KeyCode::Slash if !was_focused => {}
-                _ => {
-                    if let Some(text) = &event.text {
-                        for c in text.chars().filter(|c| !c.is_control()) {
-                            if lab.filter.chars().count() < 64 {
-                                lab.filter.push(c);
-                                lab.page = 0;
-                            }
-                        }
-                    }
-                }
-            }
+        if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape]) {
+            focus.clear();
+            lab.search_focus = false;
         }
+    } else if keys.just_pressed(KeyCode::Slash) {
+        focus.set(field, FocusCause::Navigated);
+        lab.search_focus = true;
     } else {
-        input.clear();
-        if keys.just_pressed(KeyCode::Escape) {
+        if !was_focused && keys.just_pressed(KeyCode::Escape) {
             exit.write(crate::shutdown::ExitRequest);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -686,15 +702,6 @@ pub(super) fn refresh(
     for (label, mut text) in &mut labels {
         let value = match *label {
             Label::Value(_) => continue,
-            Label::Search => format!(
-                "{} {}",
-                if lab.search_focus { "Type:" } else { "Search:" },
-                if lab.filter.is_empty() {
-                    "(all robots)"
-                } else {
-                    &lab.filter
-                }
-            ),
             Label::Robot => {
                 let hp = &lab.active.loaded.content.health.parts[0];
                 format!(

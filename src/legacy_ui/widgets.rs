@@ -23,3 +23,12 @@ pub(crate) fn visible(w: &mut Widget, name: &str, value: bool) {
 pub(crate) fn widget(a: &LegacyAssets, path: &str) -> Option<Widget> {
     a.widget(path).ok().map(|w| (*w).clone())
 }
+
+pub(crate) fn help(state: &mut super::State, assets: &LegacyAssets, title: &str, content: &str) {
+    if let (Ok(frame), Ok(page)) = (assets.widget("help/helpframe.gib"), assets.widget(content)) {
+        state.read_only.insert("New [TextBox]".into());
+        state.values.insert("caption bar".into(), title.into());
+        state.slots.insert("help content group".into(), page);
+        state.dialogs.push(frame);
+    }
+}

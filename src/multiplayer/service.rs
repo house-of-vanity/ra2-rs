@@ -3,7 +3,8 @@
 use arena_net::{lobby::Manifest, session::*, *};
 use arena_net_io::{
     ip::Connection,
-    session::{Notice, Request},
+    native::{HostInvite, JoinTarget, NativeGame, Publication},
+    session::{Node, Notice, Request},
     udp::{Advertisement, Discovery},
 };
 use std::{
@@ -15,16 +16,72 @@ use std::{
 pub enum Command {
     Host(Settings, Manifest, u16),
     Connect(Settings, Manifest, SocketAddr),
-    Search,
+    HostIroh(Settings, Manifest, HostInvite),
+    JoinIroh(Settings, Manifest, JoinTarget),
+    Search(u64),
     Game(Request),
     Stop,
 }
 pub enum Event {
     Game(Notice),
     Found(SocketAddr, Advertisement),
+    SearchFinished(u64, Option<String>),
     Input(u8, Wiring),
     Stats(u64, u64, u64),
     Error(String),
+    Publication(Publication),
+}
+struct LanSearch {
+    socket: Discovery,
+    nonce: u64,
+    started: Instant,
+    next_probe: Duration,
+}
+impl LanSearch {
+    fn start(nonce: u64) -> std::io::Result<Self> {
+        let socket = Discovery::bind(0)?;
+        socket.search(DISCOVERY_PORT, nonce)?;
+        Ok(Self {
+            socket,
+            nonce,
+            started: Instant::now(),
+            next_probe: Duration::from_secs(1),
+        })
+    }
+    fn poll(&mut self, out: &mpsc::SyncSender<Event>) -> bool {
+        for (addr, ad) in self.socket.results(self.nonce) {
+            let _ = out.try_send(Event::Found(addr, ad));
+        }
+        let age = self.started.elapsed();
+        if age >= Duration::from_secs(3) {
+            let _ = out.send(Event::SearchFinished(self.nonce, None));
+            return true;
+        }
+        if age >= self.next_probe {
+            // Repeat the broadcast so one lost UDP packet does not hide a lobby.
+            let _ = self.socket.search(DISCOVERY_PORT, self.nonce);
+            self.next_probe = age + Duration::from_secs(1);
+        }
+        false
+    }
+}
+enum Game {
+    Ip(Connection),
+    Iroh(NativeGame),
+}
+impl Game {
+    fn node(&mut self) -> &mut Node {
+        match self {
+            Self::Ip(c) => &mut c.node,
+            Self::Iroh(c) => c.node(),
+        }
+    }
+    fn poll(&mut self, now: u64) -> Result<()> {
+        match self {
+            Self::Ip(c) => c.poll(now),
+            Self::Iroh(c) => c.poll(now),
+        }
+    }
 }
 pub struct Service {
     pub tx: mpsc::SyncSender<Command>,
@@ -38,10 +95,10 @@ impl Service {
             .name("arena-network".into())
             .spawn(move || {
                 let origin = Instant::now();
-                let mut connection: Option<Connection> = None;
-                let mut browser: Option<Discovery> = None;
-                let mut search_nonce = 0;
+                let mut connection: Option<Game> = None;
+                let mut browser: Option<LanSearch> = None;
                 let mut last_stats = 0;
+                let mut publication = None;
                 loop {
                     let now = origin.elapsed().as_micros() as u64;
                     let mut stop = false;
@@ -54,38 +111,52 @@ impl Service {
                                 break;
                             }
                         };
+                        let opening = matches!(
+                            &command,
+                            Command::Host(..)
+                                | Command::Connect(..)
+                                | Command::HostIroh(..)
+                                | Command::JoinIroh(..)
+                        );
                         let result: Result<()> = match command {
                             Command::Host(s, m, port) => {
                                 browser = None;
-                                Connection::host(s, m, port).map(|c| connection = Some(c))
+                                Connection::host(s, m, port).map(|c| connection = Some(Game::Ip(c)))
                             }
                             Command::Connect(s, m, a) => {
                                 browser = None;
-                                Connection::connect(s, m, a).map(|c| connection = Some(c))
+                                Connection::connect(s, m, a).map(|c| connection = Some(Game::Ip(c)))
                             }
-                            Command::Search => {
-                                if browser.is_none() {
-                                    browser = Discovery::bind(0).ok();
-                                }
-                                search_nonce = arena_net_io::ip::nonce();
-                                browser
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        Error::Io("Cannot create LAN discovery socket".into())
-                                    })
-                                    .and_then(|b| {
-                                        b.search(DISCOVERY_PORT, search_nonce)
-                                            .map(|_| ())
-                                            .map_err(|e| Error::Io(e.to_string()))
-                                    })
+                            Command::HostIroh(s, m, invite) => {
+                                browser = None;
+                                NativeGame::host(s, m, invite)
+                                    .map(|c| connection = Some(Game::Iroh(c)))
+                            }
+                            Command::JoinIroh(s, m, target) => {
+                                browser = None;
+                                NativeGame::join(s, m, target)
+                                    .map(|c| connection = Some(Game::Iroh(c)))
+                            }
+                            Command::Search(nonce) => {
+                                browser = match LanSearch::start(nonce) {
+                                    Ok(search) => Some(search),
+                                    Err(e) => {
+                                        let _ = out.send(Event::SearchFinished(
+                                            nonce,
+                                            Some(e.to_string()),
+                                        ));
+                                        None
+                                    }
+                                };
+                                Ok(())
                             }
                             Command::Game(r) => connection
                                 .as_mut()
                                 .ok_or(Error::Phase)
-                                .and_then(|c| c.node.request(r)),
+                                .and_then(|c| c.node().request(r)),
                             Command::Stop => {
                                 if let Some(c) = &mut connection {
-                                    let _ = c.node.request(Request::Leave);
+                                    let _ = c.node().request(Request::Leave);
                                     let _ = c.poll(now);
                                 }
                                 stop = true;
@@ -93,27 +164,49 @@ impl Service {
                             }
                         };
                         if let Err(e) = result {
-                            let _ = out.try_send(Event::Error(format!("{e:?}")));
+                            let reason = match e {
+                                Error::Io(message) => message,
+                                other => format!("{other:?}"),
+                            };
+                            let event = if opening {
+                                Event::Game(Notice::Disconnected(reason))
+                            } else {
+                                Event::Error(reason)
+                            };
+                            let _ = out.try_send(event);
                         }
                     }
                     if stop {
                         break;
                     }
-                    if let Some(b) = &browser {
-                        for (a, ad) in b.results(search_nonce) {
-                            let _ = out.try_send(Event::Found(a, ad));
-                        }
+                    if browser.as_mut().is_some_and(|search| search.poll(&out)) {
+                        browser = None;
                     }
                     if let Some(c) = &mut connection {
                         if let Err(e) = c.poll(now) {
-                            let _ = out.try_send(Event::Error(format!("Network error: {e:?}")));
+                            let reason = match e {
+                                Error::Io(message) => message,
+                                other => format!("{other:?}"),
+                            };
+                            let _ = out.try_send(Event::Game(Notice::Disconnected(reason)));
                             connection = None;
                             continue;
                         }
-                        for (slot, input) in std::mem::take(&mut c.node.inputs) {
+                        if let Game::Iroh(game) = c
+                            && let Some(p) = game.take_publication()
+                        {
+                            publication = Some(p);
+                        }
+                        if let Some(p) = publication
+                            && out.try_send(Event::Publication(p)).is_ok()
+                        {
+                            publication = None;
+                        }
+                        let node = c.node();
+                        for (slot, input) in std::mem::take(&mut node.inputs) {
                             let _ = out.try_send(Event::Input(slot, input));
                         }
-                        for notice in c.node.notices.drain(..) {
+                        for notice in node.notices.drain(..) {
                             if let Err(mpsc::TrySendError::Full(_)) =
                                 out.try_send(Event::Game(notice))
                             {
@@ -127,9 +220,9 @@ impl Service {
                         if now - last_stats >= 500_000 {
                             last_stats = now;
                             let _ = out.try_send(Event::Stats(
-                                c.node.rtt_us,
-                                c.node.links.values().map(|l| l.sent_bytes).sum(),
-                                c.node.links.values().map(|l| l.received_bytes).sum(),
+                                node.rtt_us,
+                                node.links.values().map(|l| l.sent_bytes).sum(),
+                                node.links.values().map(|l| l.received_bytes).sum(),
                             ));
                         }
                     }

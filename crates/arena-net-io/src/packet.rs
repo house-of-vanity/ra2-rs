@@ -33,6 +33,9 @@ pub struct LinkEndpoint {
 }
 impl LinkEndpoint {
     pub fn new(local: PeerId, remote: PeerId, session: SessionId) -> Self {
+        Self::with_mtu(local, remote, session, MTU)
+    }
+    pub(crate) fn with_mtu(local: PeerId, remote: PeerId, session: SessionId, mtu: usize) -> Self {
         let mut app = App::new();
         app.init_resource::<Time<Real>>()
             .init_resource::<LocalTimeline>()
@@ -98,7 +101,7 @@ impl LinkEndpoint {
                 }
             }
         }
-        let mut link = Link::default().with_mtu(LinkMtu::new(MTU - 16));
+        let mut link = Link::default().with_mtu(LinkMtu::new(mtu - 16));
         link.stats.rtt = Duration::from_millis(100);
         let entity = app.world_mut().spawn((link, Linked, transport)).id();
         Self {

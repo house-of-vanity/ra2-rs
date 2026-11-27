@@ -1,3 +1,4 @@
+use super::text_field::{FieldLayout, aligned};
 use super::{Cell, State, assets::LegacyAssets, canvas::Pixels};
 use bevy::prelude::*;
 use ra2_formats::gib::Widget;
@@ -17,6 +18,7 @@ pub struct Hit {
 pub struct Frame {
     pub pixels: Pixels,
     pub hits: Vec<Hit>,
+    pub fields: std::collections::BTreeMap<String, FieldLayout>,
     pub scroll_limits: std::collections::BTreeMap<String, usize>,
     pub regions: std::collections::BTreeMap<String, Rect>,
 }
@@ -236,7 +238,7 @@ impl Layout<'_> {
             if cr.intersect(r).is_empty() {
                 continue;
             }
-            let highlighted = self.state.hover == cell.key;
+            let highlighted = !cell.key.is_empty() && self.state.hover == cell.key;
             let style_id = w.value(if cell.selected {
                 "Selection"
             } else {
@@ -294,6 +296,10 @@ impl Layout<'_> {
                         .unwrap_or(color(w, "BorderColor", [0.1, 0.1, 0.1, 1.])),
                     clip.intersect(r),
                 );
+            }
+            // Headers and progress rows have no action.
+            if cell.key.is_empty() {
+                continue;
             }
             self.frame.hits.push(Hit {
                 name: cell.key.clone(),
@@ -492,6 +498,7 @@ impl Layout<'_> {
                     .then(|| format!("scroll:{owner}"));
             let capture = (!w.name().is_empty() || synthetic.is_some())
                 && !self.state.disabled.contains(w.name())
+                && !self.state.read_only.contains(w.name())
                 && (w.kind != "TextBox"
                     || w.flag("Editable")
                     || self.state.interactive.contains(w.name()));
@@ -580,25 +587,26 @@ impl Layout<'_> {
             .get(w.name())
             .copied()
             .unwrap_or(w.flag("Checked"))
-            || self.state.pressed == w.name()
+            || (!w.name().is_empty() && self.state.pressed == w.name())
         {
             2
-        } else if self.state.hover == w.name() {
+        } else if !w.name().is_empty() && self.state.hover == w.name() {
             1
         } else {
             0
         };
         let image_child = w.fields.get("StateImage").and_then(|states| {
-            states.iter().find_map(|v| {
-                let parts: Vec<_> = v.split_whitespace().collect();
-                if parts.first().and_then(|s| s.parse::<i32>().ok()) == Some(active_state)
-                    && parts.get(1) == Some(&"true")
-                {
-                    parts.get(2)?.parse::<usize>().ok()
-                } else {
-                    None
-                }
-            })
+            let image = |state| {
+                states.iter().find_map(|v| {
+                    let mut parts = v.split_whitespace();
+                    if parts.next()?.parse::<i32>().ok()? == state && parts.next()? == "true" {
+                        parts.next()?.parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+            };
+            image(active_state).or_else(|| image(0))
         });
         for (index, child) in children {
             if w.fields.contains_key("StateImage") {
@@ -613,51 +621,65 @@ impl Layout<'_> {
             {
                 continue;
             }
-            if w.kind == "TextBox" && w.flag("MultiLine") && child.kind == "Text" {
-                let baseline = self
+            if w.kind == "TextBox"
+                && child.kind == "Text"
+                && let Some(font) = self
                     .assets
                     .fonts
                     .get(child.value("_Font"))
-                    .map_or(12, |f| f.baseline) as f32;
-                self.text(
-                    child.value("_Font"),
-                    override_text.unwrap_or(child.value("_Text")),
-                    r.min + Vec2::Y * baseline,
-                    color(child, "_ForeColor", [1.0; 4]),
-                    clip.intersect(r),
-                    true,
-                );
+                    .or_else(|| self.assets.fonts.get("fg_mcn14"))
+            {
+                let text = override_text.unwrap_or(child.value("_Text"));
+                let tint = color(child, "_ForeColor", [1.; 4]);
+                let align = w.value("Alignment").parse::<u32>().unwrap_or(9);
+                let multiline = w.flag("MultiLine");
+                if w.flag("Editable")
+                    && !self.state.disabled.contains(w.name())
+                    && !self.state.read_only.contains(w.name())
+                {
+                    let edit = (self.state.focused == w.name()
+                        && self.state.edit.field == w.name())
+                    .then_some(&self.state.edit);
+                    let mut field = FieldLayout::new(font, text, r, align, multiline, edit);
+                    field.allow_newlines = multiline && w.value("AllowNewlines") != "false";
+                    field.draw(&mut self.frame.pixels, font, tint, clip, edit);
+                    self.frame.fields.insert(w.name().into(), field);
+                } else if multiline {
+                    self.frame.pixels.text(
+                        font,
+                        text,
+                        r.min + Vec2::Y * font.ascent as f32,
+                        tint,
+                        clip.intersect(r),
+                        true,
+                    );
+                } else {
+                    let label = super::text_field::fit_label(font, text, r.width());
+                    let x = aligned(
+                        r.min.x,
+                        r.width(),
+                        font.measure(&label),
+                        align & 2 != 0,
+                        align & 4 != 0,
+                    );
+                    let y = aligned(
+                        r.min.y,
+                        r.height(),
+                        (font.ascent + font.descent) as f32,
+                        align & 16 != 0,
+                        align & 32 != 0,
+                    );
+                    self.frame.pixels.text_line(
+                        font,
+                        &label,
+                        Vec2::new(x, y + font.ascent as f32),
+                        tint,
+                        clip.intersect(r),
+                    );
+                }
                 continue;
             }
             let mut child_forced = None;
-            if w.kind == "TextBox"
-                && child.kind == "Text"
-                && let Some(font) = self.assets.fonts.get(child.value("_Font"))
-            {
-                let text = override_text.unwrap_or(child.value("_Text"));
-                let width = text
-                    .chars()
-                    .filter_map(|c| font.glyphs.get(&c))
-                    .map(|g| g.advance)
-                    .sum::<i32>() as f32;
-                let align = w.value("Alignment").parse::<u32>().unwrap_or(9);
-                let x = if align & 4 != 0 {
-                    r.width() - width
-                } else if align & 2 != 0 {
-                    (r.width() - width) * 0.5
-                } else {
-                    0.0
-                };
-                let y = if align & 32 != 0 {
-                    r.height() - font.line_height as f32
-                } else if align & 16 != 0 {
-                    (r.height() - font.line_height as f32) * 0.5
-                } else {
-                    0.0
-                };
-                let origin = r.min + Vec2::new(x, y + font.baseline as f32);
-                child_forced = Some(Rect::from_corners(origin, origin));
-            }
             if w.kind == "DropDown" && child.value("ID") == w.value("DecoratedList") {
                 continue;
             }
@@ -783,6 +805,7 @@ pub fn compose(assets: &LegacyAssets, state: &State, width: usize, height: usize
     let frame = Frame {
         pixels: Pixels::blank(width, height),
         hits: vec![],
+        fields: Default::default(),
         scroll_limits: Default::default(),
         regions: Default::default(),
     };
@@ -802,6 +825,7 @@ pub fn compose(assets: &LegacyAssets, state: &State, width: usize, height: usize
     }
     if !state.dialogs.is_empty() {
         layout.frame.hits.clear();
+        layout.frame.fields.clear();
     }
     for dialog in &state.dialogs {
         layout.walk(dialog, bounds, None, bounds, "", None, 0);

@@ -13,12 +13,16 @@ use arena_net::{
     lobby::{Digest, Manifest},
     session::*,
 };
-use arena_net_io::session::{Notice, Request};
+use arena_net_io::{
+    native::{HostInvite, JoinTarget, Publication},
+    session::{Notice, Request},
+};
 use bevy::prelude::*;
 use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -28,12 +32,48 @@ enum Screen {
     Loading,
     Playing,
 }
+#[derive(Default)]
+enum SearchState {
+    #[default]
+    Idle,
+    Searching {
+        nonce: u64,
+        started: Duration,
+    },
+    Finished,
+    Failed(String),
+}
+impl SearchState {
+    fn accepts(&self, id: u64) -> bool {
+        matches!(self, Self::Searching { nonce, .. } if *nonce == id)
+    }
+    fn dots(&self, now: Duration) -> usize {
+        match self {
+            Self::Searching { started, .. } => {
+                1 + (now.saturating_sub(*started).as_millis() / 350 % 3) as usize
+            }
+            _ => 0,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct PendingReady {
+    sent: bool,
+    wanted: bool,
+}
+
 #[derive(Resource)]
 pub(crate) struct Multiplayer {
     service: Option<service::Service>,
     screen: Screen,
     tab: usize,
     ip_dialog: bool,
+    help: bool,
+    join_iroh: bool,
+    join_input: String,
+    invite: Option<HostInvite>,
+    publication: Option<Publication>,
+    copied_endpoint: bool,
     pub host: bool,
     pub local: usize,
     pub epoch: u64,
@@ -44,6 +84,8 @@ pub(crate) struct Multiplayer {
     pub pause_barrier_tick: u64,
     settings: Settings,
     players: Vec<Player>,
+    start_available: bool,
+    pending_ready: Option<PendingReady>,
     manifest: Option<Manifest>,
     selected: Option<usize>,
     picker: bool,
@@ -52,6 +94,7 @@ pub(crate) struct Multiplayer {
     bots: BTreeMap<Digest, Arc<arena_core::robot::RobotDefinition>>,
     server_list: BTreeMap<SocketAddr, arena_net_io::udp::Advertisement>,
     selected_server: Option<SocketAddr>,
+    search: SearchState,
     name: String,
     ip: String,
     pub(crate) error: Option<String>,
@@ -77,6 +120,12 @@ impl Default for Multiplayer {
             screen: Screen::Browse,
             tab: 0,
             ip_dialog: false,
+            help: false,
+            join_iroh: false,
+            join_input: String::new(),
+            invite: None,
+            publication: None,
+            copied_endpoint: false,
             host: false,
             local: 0,
             epoch: 0,
@@ -94,6 +143,8 @@ impl Default for Multiplayer {
                 weight: None,
             },
             players: vec![],
+            start_available: false,
+            pending_ready: None,
             manifest: None,
             selected: None,
             picker: false,
@@ -102,6 +153,7 @@ impl Default for Multiplayer {
             bots: BTreeMap::new(),
             server_list: BTreeMap::new(),
             selected_server: None,
+            search: SearchState::Idle,
             name: "Player".into(),
             ip: "127.0.0.1".into(),
             error: None,
@@ -123,6 +175,59 @@ impl Default for Multiplayer {
     }
 }
 impl Multiplayer {
+    fn local_ready(&self) -> bool {
+        self.pending_ready.map_or_else(
+            || {
+                self.players
+                    .iter()
+                    .any(|p| p.slot as usize == self.local && p.ready)
+            },
+            |pending| pending.wanted,
+        )
+    }
+    fn toggle_ready(&mut self) {
+        let wanted = !self.local_ready();
+        if let Some(pending) = &mut self.pending_ready {
+            pending.wanted = wanted;
+        } else {
+            self.submit_ready(wanted);
+        }
+    }
+    fn submit_ready(&mut self, wanted: bool) {
+        let Some(service) = &self.service else { return };
+        match service.send(service::Command::Game(Request::Ready(wanted))) {
+            Ok(()) => {
+                self.pending_ready = Some(PendingReady {
+                    sent: wanted,
+                    wanted,
+                })
+            }
+            Err(error) => {
+                self.pending_ready = None;
+                self.error = Some(error);
+            }
+        }
+    }
+    fn update_roster(&mut self, settings: Settings, players: Vec<Player>, epoch: u64) {
+        let previous = self.players.iter().find(|p| p.slot as usize == self.local);
+        let local = players.iter().find(|p| p.slot as usize == self.local);
+        if settings != self.settings
+            || self.epoch != epoch
+            || previous.map(|p| p.digest) != local.map(|p| p.digest)
+        {
+            self.pending_ready = None;
+        } else if let Some(pending) = self.pending_ready
+            && local.is_some_and(|p| p.ready == pending.sent)
+        {
+            self.pending_ready = None;
+            if pending.wanted != pending.sent {
+                self.submit_ready(pending.wanted);
+            }
+        }
+        self.settings = settings;
+        self.players = players;
+        self.epoch = epoch;
+    }
     fn send(&mut self, r: Request) {
         if let Some(s) = &self.service {
             if let Err(e) = s.send(service::Command::Game(r)) {
@@ -131,13 +236,23 @@ impl Multiplayer {
         }
     }
     fn choose(&mut self, session: &battle::Session, index: usize) -> Result<(), String> {
+        let request = self.robot_request(session, index)?;
+        self.pending_ready = None;
+        self.send(request);
+        Ok(())
+    }
+    fn robot_request(
+        &mut self,
+        session: &battle::Session,
+        index: usize,
+    ) -> Result<Request, String> {
         let e = session.library.get(index).ok_or("Choose a robot")?;
         let bytes = ra2_formats::bot::encode(&e.robot)?;
         let digest = *blake3::hash(&bytes).as_bytes();
         validate_bot(&e.robot)?;
         self.bots.insert(digest, e.robot.clone());
         self.selected = Some(index);
-        self.send(Request::Select(
+        Ok(Request::Select(
             Player {
                 slot: self.local as u8,
                 alias: self.name.clone(),
@@ -148,12 +263,67 @@ impl Multiplayer {
                 ready: false,
             },
             bytes,
-        ));
+        ))
+    }
+    fn refresh_servers(&mut self, started: Duration) {
+        self.server_list.clear();
+        self.selected_server = None;
+        self.status.clear();
+        let nonce = arena_net_io::ip::nonce();
+        self.search = match self
+            .service
+            .as_ref()
+            .map(|s| s.send(service::Command::Search(nonce)))
+        {
+            Some(Ok(())) => SearchState::Searching { nonce, started },
+            Some(Err(e)) => SearchState::Failed(e),
+            None => SearchState::Failed("Network worker unavailable".into()),
+        };
+        self.revision += 1;
+    }
+    fn start_host(&mut self, battle: &battle::Session) -> Result<(), String> {
+        let manifest = self
+            .manifest
+            .clone()
+            .ok_or("Compatibility manifest unavailable")?;
+        self.local = 0;
+        let robot = self.robot_request(battle, self.selected.unwrap_or(0))?;
+        let settings = self.settings.clone();
+        let command = if let Some(invite) = &self.invite {
+            service::Command::HostIroh(settings, manifest, invite.clone())
+        } else {
+            service::Command::Host(settings, manifest, GAME_PORT)
+        };
+        let service = self.service.as_ref().ok_or("Network worker unavailable")?;
+        service.send(command)?;
+        if let Err(e) = service.send(service::Command::Game(robot)) {
+            self.disconnect();
+            return Err(e);
+        }
+        self.host = true;
+        self.screen = Screen::Lobby;
+        self.status = if let Some(invite) = &self.invite {
+            self.publication = Some(Publication::Publishing(invite.code));
+            "Hosting with iroh".into()
+        } else {
+            format!("Hosting on UDP port {GAME_PORT}")
+        };
         Ok(())
     }
     fn disconnect(&mut self) {
         self.service = None;
+        self.host = false;
+        self.search = SearchState::Idle;
+        self.status.clear();
+        self.ip_dialog = false;
+        self.help = false;
+        self.join_iroh = false;
+        self.invite = None;
+        self.publication = None;
+        self.copied_endpoint = false;
         self.players.clear();
+        self.start_available = false;
+        self.pending_ready = None;
         self.screen = Screen::Browse;
         self.loaded = false;
         self.loaded_sent = false;
@@ -311,10 +481,7 @@ fn poll(
             net.settings.arena = arena.key.clone();
         }
         net.service = Some(service::Service::spawn());
-        if let Some(service) = &net.service {
-            let _ = service.send(service::Command::Search);
-        }
-        net.revision += 1;
+        net.refresh_servers(time.elapsed());
     }
     let staying = matches!(
         nav.page,
@@ -341,18 +508,39 @@ fn poll(
     for event in events {
         match event {
             service::Event::Found(a, ad) => {
-                net.server_list.insert(a, ad);
-                net.revision += 1;
+                if net.search.accepts(ad.nonce) && net.server_list.get(&a) != Some(&ad) {
+                    net.server_list.insert(a, ad);
+                    net.revision += 1;
+                }
+            }
+            service::Event::SearchFinished(nonce, error) => {
+                if net.search.accepts(nonce) {
+                    net.search = error.map_or(SearchState::Finished, SearchState::Failed);
+                    net.revision += 1;
+                }
             }
             service::Event::Error(e) => {
-                if e.starts_with("Network error:") {
-                    net.disconnect();
-                    s.network = false;
-                    nav.page = Page::Multiplayer;
-                }
                 if net.error.is_none() {
                     net.error = Some(e);
                 }
+                net.revision += 1;
+            }
+            service::Event::Publication(p) => {
+                let code = match p {
+                    Publication::Ready(code)
+                    | Publication::Retrying(code)
+                    | Publication::Publishing(code) => code,
+                };
+                if let Some(invite) = &mut net.invite
+                    && invite.code != code
+                {
+                    let previous = invite.code;
+                    invite.code = code;
+                    net.error = Some(format!(
+                        "Room code {previous} was already in use. Your new code is {code}."
+                    ));
+                }
+                net.publication = Some(p);
                 net.revision += 1;
             }
             service::Event::Input(slot, w) => {
@@ -384,13 +572,12 @@ fn poll(
                         }
                     }
                     Notice::Roster(settings, players, epoch) => {
-                        net.settings = settings;
-                        net.players = players;
-                        net.epoch = epoch;
+                        net.update_roster(settings, players, epoch);
                         if net.screen != Screen::Playing && net.screen != Screen::Loading {
                             net.screen = Screen::Lobby;
                         }
                     }
+                    Notice::StartAvailable(available) => net.start_available = available,
                     Notice::Bot(digest, bytes) => {
                         match ra2_formats::bot::decode(&bytes)
                             .and_then(|bot| validate_bot(&bot).map(|_| bot))
@@ -467,5 +654,53 @@ fn poll(
                 net.revision += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use std::sync::{Mutex, mpsc};
+
+    #[test]
+    fn two_clicks_before_the_host_replies_keep_the_last_choice() {
+        let (tx, commands) = mpsc::sync_channel(4);
+        let (_, rx) = mpsc::sync_channel(4);
+        let mut net = Multiplayer {
+            service: Some(service::Service {
+                tx,
+                rx: Mutex::new(rx),
+            }),
+            players: vec![Player {
+                slot: 0,
+                alias: "Host".into(),
+                team: "Team".into(),
+                bot_name: "Bot".into(),
+                digest: [1; 32],
+                size: 100,
+                ready: false,
+            }],
+            ..Default::default()
+        };
+        net.toggle_ready();
+        net.toggle_ready();
+        assert!(!net.local_ready());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(service::Command::Game(Request::Ready(true)))
+        ));
+        assert!(commands.try_recv().is_err());
+        let mut players = net.players.clone();
+        players[0].ready = true;
+        net.update_roster(net.settings.clone(), players.clone(), 0);
+        assert!(!net.local_ready());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(service::Command::Game(Request::Ready(false)))
+        ));
+        players[0].ready = false;
+        net.update_roster(net.settings.clone(), players, 0);
+        assert!(!net.local_ready() && net.pending_ready.is_none());
+        assert!(commands.try_recv().is_err());
     }
 }

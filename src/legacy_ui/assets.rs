@@ -77,9 +77,12 @@ impl LegacyAssets {
         let archive =
             CfzArchive::decode(&std::fs::read(root.join("RA2.cfz")).map_err(|e| e.to_string())?)?;
         this.armors = ra2_formats::armor::decode(archive.get("Armor_Definitions.txt")?)?;
+        let fallback = super::font::fallback_font();
         for (name, bytes) in archive.files {
             if let Some(name) = name.strip_suffix(".giff") {
-                this.fonts.insert(name.into(), giff::decode(&bytes)?);
+                let mut font = giff::decode(&bytes)?;
+                super::font::extend(&mut font, &fallback);
+                this.fonts.insert(name.into(), font);
             } else if let Some(extension) = name
                 .rsplit('.')
                 .next()

@@ -231,9 +231,39 @@ fn run(world: &mut World, mut check: Local<Check>) {
         14 => {
             check.release = Some(click(world, "new team button"));
         }
-        15 => screenshot(world, "new-team"),
-        16 => {
+        15 => {
+            check.release = Some(click(world, "name input textbox"));
+            check.stage = 140;
+            return;
+        }
+        140 => {
+            key(world, ButtonState::Pressed);
+            key(world, ButtonState::Released);
+        }
+        141 => {
+            assert_eq!(
+                world.resource::<crate::legacy_ui::State>().values["name input textbox"],
+                "k"
+            );
+            native_key(world, KeyCode::Tab, ButtonState::Pressed);
+            native_key(world, KeyCode::Tab, ButtonState::Released);
+        }
+        142 => {
+            assert_eq!(
+                world.resource::<crate::legacy_ui::State>().focused,
+                "team motto input textbox"
+            );
+            key(world, ButtonState::Pressed);
+            key(world, ButtonState::Released);
+        }
+        143 => {
+            assert_eq!(
+                world.resource::<crate::legacy_ui::State>().values["team motto input textbox"],
+                "k"
+            );
+            screenshot(world, "new-team");
             check.release = Some(click(world, "cancel button"));
+            check.stage = 16;
         }
         17 => {
             // Fresh unsaved document: this check never saves into native player files.

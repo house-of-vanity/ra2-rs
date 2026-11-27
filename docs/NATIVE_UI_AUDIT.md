@@ -74,8 +74,8 @@
 
 ```bash
 cargo test --workspace --offline --locked
-cargo test -p physics-demo original_ --offline --locked -- --ignored --nocapture
-cargo clippy -p physics-demo --all-targets --offline --locked -- -D warnings
+cargo test -p ra2-rs original_ --offline --locked -- --ignored --nocapture
+cargo clippy -p ra2-rs --all-targets --offline --locked -- -D warnings
 ```
 
 Нативные тесты требуют установленную рядом игру. Тест управления данными

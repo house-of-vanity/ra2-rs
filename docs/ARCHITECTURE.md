@@ -122,5 +122,5 @@ replay/interpolation. `arena-net-io` содержит Lightyear channels, UDP и
 и целочисленных очках.
 
 Конфигурация физики — `config/game.ron`, встроенная в бинарник. EngineSettings
-сохраняются атомарно в `.open-arena/settings.ron`. Навигация ставит виртуальное
+сохраняются атомарно в `.ra2-rs/settings.ron`. Навигация ставит виртуальное
 время и нужные физические контексты на паузу; GUI продолжает работать.

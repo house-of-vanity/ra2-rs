@@ -1,26 +1,34 @@
-# Open Arena — Robot Arena 2
+# ra2-rs
 
-Нативный перенос для Linux: Rust, Bevy 0.20 и Rapier 0.37. Главное меню,
-TEAM HQ и мастерская используют оригинальные ресурсы установленной игры.
+Нативный перенос Robot Arena 2 на Rust, Bevy 0.20 и Rapier 0.37 для Windows,
+macOS и Linux. Главное меню, TEAM HQ и мастерская используют оригинальные ресурсы установленной игры.
 Синтетическая площадка с тестовой тележкой и кубами удалена.
 
 ## Сборка и запуск
 
-Из каталога `physics-demo`:
+Соберите и запустите игру из каталога `ra2-rs`.
 
 ```bash
 cargo build --release --locked
-./target/release/physics-demo --game-dir "/path/to/Robot Arena 2"
+./target/release/ra2-rs --game-dir "/path/to/Robot Arena 2"
 ```
 
-Нужны Rust/Cargo 1.97.1+, C-компилятор, `pkg-config`, библиотеки разработки
-ALSA, Wayland и xkbcommon. Debian/Ubuntu:
+- **Windows.** Запускайте `target\release\ra2-rs.exe`. Значок встроен в EXE.
+- **macOS.** После сборки запустите `python3 tools/package-desktop.py macos`.
+  Приложение `target/release/ra2-rs.app` можно открыть в Finder и закрепить в Dock.
+- **Linux.** Для меню приложений и панели Wayland запустите
+  `python3 tools/package-desktop.py linux /полный/путь/к/ra2-rs`, указав
+  постоянное расположение готового бинарника. Скрипт установит ярлык и значок
+  в каталог данных текущего пользователя.
+
+Для сборки нужны Rust/Cargo 1.97.1+ и системный компилятор. На Linux также нужны
+`pkg-config` и библиотеки разработки ALSA, Wayland и xkbcommon. Для Debian/Ubuntu установите
 `build-essential pkg-config libasound2-dev libwayland-dev libxkbcommon-dev`.
 Оба оконных backend собираются вместе, даже если запускать игру через X11.
 На NixOS: `nix-shell --run 'cargo build --release --locked'`.
 `./run.sh` собирает и запускает приложение в окружении Nix.
 
-Готовый файл `target/release/physics-demo` можно положить прямо в папку игры,
+Готовый файл `target/release/ra2-rs` можно положить прямо в папку игры,
 рядом с `Components.cfz`, `RA2.cfz`, `UI`, `Components` и `Arenas`, и запускать
 без аргументов. Исходники, Rust, скрипт и папка `config` при запуске не нужны.
 Другой вариант — `--game-dir PATH` или переменная `RA2_GAME_DIR`.
@@ -33,9 +41,9 @@ ALSA, Wayland и xkbcommon. Debian/Ubuntu:
 в репозиторий или исполняемый файл.
 
 Конфигурация физики и меню встроена. Настройки хранятся в
-`GAME/.open-arena/settings.ron`; переопределение — `--settings-file FILE`.
+`GAME/.ra2-rs/settings.ron`. Путь можно задать через `--settings-file FILE`.
+`GAME/.ra2-rs/menu.ron` позволяет заменить встроенную раскладку меню.
 `--config FILE` заменяет встроенный `config/game.ron`.
-`run.sh` использует локальный `config/user-settings.ron`.
 
 ## Exhibition
 
@@ -111,12 +119,15 @@ cargo run -- --game-dir ../RobotArena2 --editor-file "../RobotArena2/Teams/Team0
 
 ## Multiplayer
 
-Откройте **MULTIPLAYER** в главном меню. Хост создаёт игру через **Create Game**;
-остальные находят её через **Refresh / Join Game** или вводят адрес в **IP Connect**.
-Для проверки двумя окнами на одном компьютере используйте `127.0.0.1`.
-Каждый выбирает робота и включает **Ready**, затем хост нажимает **Begin Match**.
+Для игры через интернет выберите **Multiplayer → Create Game → Iroh native networking**.
+В меню сразу появятся восемь цифр, например `0427-9136`. Нажмите **Start Game**,
+продиктуйте код другу. Друг вводит его в **Join by code**. Кнопка **EndpointID**
+под кодом копирует полный идентификатор для вставки в то же поле. Проброс портов
+не требуется. Каждый выбирает робота и включает **Ready**, затем хост нажимает **Begin Match**.
 
-Игра использует UDP 27666, поиск LAN — UDP 27667. GameSpy заменён заглушкой IROH.
+Для локальной сети выберите **Local network only**. Войти можно через
+**Refresh / Join Game** или **IP Connect**. Игра по IP использует UDP 27666,
+поиск LAN — UDP 27667. Для двух окон на одном компьютере подходит `127.0.0.1`.
 Собственный робот клиента предсказывается локально на штатной физической сборке;
 снимки хоста подтверждают ввод и запускают сверку/replay. Удалённые роботы
 интерполируются. F4 показывает сетевые показатели и ошибки prediction.

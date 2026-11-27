@@ -144,7 +144,7 @@ Z-Tek HP через точку 2 и обычный Z-Tek через точку 1
 `logs/attachment-mouse.bot` и `logs/attachment-*.png`.
 
 ```bash
-nix-shell --run 'cargo test -p physics-demo original_mounts_place_and_roundtrip_in_native_bot -- --ignored --nocapture'
+nix-shell --run 'cargo test -p ra2-rs original_mounts_place_and_roundtrip_in_native_bot -- --ignored --nocapture'
 ```
 
 ## Проверки гаража

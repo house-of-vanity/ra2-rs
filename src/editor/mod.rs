@@ -250,6 +250,7 @@ fn sync(
     ui.checked.clear();
     ui.viewports.clear();
     ui.disabled.clear();
+    ui.read_only.clear();
     if editor.document.robot.chassis.model.is_none() {
         for name in [
             "components button",
@@ -505,7 +506,20 @@ fn sync(
             Dialog::PaintExport => "botlab/export_texture",
             Dialog::Help => "help/helpframe",
         };
-        if let Ok(panel) = assets.widget(&format!("{file}.gib")) {
+        if let Ok(mut panel) = assets.widget(&format!("{file}.gib")) {
+            if matches!(dialog, Dialog::Controller(_)) {
+                for name in ["input1", "input2"] {
+                    panels::patch(
+                        std::sync::Arc::make_mut(&mut panel),
+                        name,
+                        "Editable",
+                        "false",
+                    );
+                    ui.interactive.insert(name.into());
+                }
+            } else if matches!(dialog, Dialog::Help) {
+                ui.read_only.insert("New [TextBox]".into());
+            }
             ui.dialogs.push(panel);
         }
     }

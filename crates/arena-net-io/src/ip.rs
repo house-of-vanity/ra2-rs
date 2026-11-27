@@ -1,4 +1,4 @@
-//! Direct-IP admission and LAN discovery. Match/session code only sees PeerId and datagrams.
+//! Shared session admission over addressed datagrams, plus direct-IP and LAN setup.
 use crate::{
     session::{Node, Notice, Stage},
     udp::{Advertisement, Discovery, UdpIo},
@@ -14,20 +14,19 @@ pub fn nonce() -> u64 {
         .build_hasher()
         .finish()
 }
-/// Socket-shaped boundary: permits exercising the exact IP handshake without OS sockets.
+/// The address is a UDP socket address or an authenticated iroh endpoint ID.
 pub trait SocketIo: arena_net::transport::DatagramIo {
-    fn address(&self) -> std::io::Result<SocketAddr>;
-    fn raw_send(&self, address: SocketAddr, bytes: &[u8]) -> std::io::Result<usize>;
-    fn take_unadmitted(&mut self) -> Vec<(SocketAddr, Vec<u8>)>;
+    type Address: Copy + Ord;
+    const MTU: usize = arena_net::transport::MTU;
+    fn raw_send(&self, address: Self::Address, bytes: &[u8]) -> std::io::Result<usize>;
+    fn take_unadmitted(&mut self) -> Vec<(Self::Address, Vec<u8>)>;
     fn set_local(&mut self, local: PeerId);
-    fn add_route(&mut self, peer: PeerId, address: SocketAddr) -> Result<()>;
+    fn add_route(&mut self, peer: PeerId, address: Self::Address) -> Result<()>;
     fn remove_route(&mut self, peer: PeerId);
-    fn route(&self, peer: PeerId) -> Option<SocketAddr>;
+    fn route(&self, peer: PeerId) -> Option<Self::Address>;
 }
 impl SocketIo for UdpIo {
-    fn address(&self) -> std::io::Result<SocketAddr> {
-        UdpIo::address(self)
-    }
+    type Address = SocketAddr;
     fn raw_send(&self, a: SocketAddr, b: &[u8]) -> std::io::Result<usize> {
         UdpIo::raw_send(self, a, b)
     }
@@ -51,12 +50,12 @@ pub struct Connection<T: SocketIo = UdpIo> {
     pub node: Node,
     pub io: T,
     manifest: Manifest,
-    remote: Option<SocketAddr>,
+    remote: Option<T::Address>,
     nonce: u64,
     started: u64,
     last_hello: u64,
-    pub discovery: Option<Discovery>,
-    admissions: BTreeMap<SocketAddr, (u64, u8, SessionId)>,
+    discovery: Option<(Discovery, u16)>,
+    admissions: BTreeMap<T::Address, (u64, u8, SessionId)>,
 }
 fn raw(c: &Control) -> Result<Vec<u8>> {
     c.validate()?;
@@ -85,18 +84,10 @@ fn io_error(e: std::io::Error) -> Error {
 impl Connection<UdpIo> {
     pub fn host(settings: Settings, manifest: Manifest, port: u16) -> Result<Self> {
         let io = UdpIo::bind(HOST, (Ipv4Addr::UNSPECIFIED, port).into()).map_err(io_error)?;
-        let discovery = Some(Discovery::bind(DISCOVERY_PORT).map_err(io_error)?);
-        Ok(Self {
-            node: Node::new(HOST, settings)?,
-            io,
-            manifest,
-            remote: None,
-            nonce: nonce(),
-            started: 0,
-            last_hello: 0,
-            discovery,
-            admissions: BTreeMap::new(),
-        })
+        let port = io.address().map_err(io_error)?.port();
+        let mut connection = Self::host_with_io(settings, manifest, io)?;
+        connection.discovery = Some((Discovery::bind(DISCOVERY_PORT).map_err(io_error)?, port));
+        Ok(connection)
     }
     pub fn connect(settings: Settings, manifest: Manifest, remote: SocketAddr) -> Result<Self> {
         let bind = SocketAddr::new(
@@ -108,44 +99,33 @@ impl Connection<UdpIo> {
             0,
         );
         let io = UdpIo::bind(PeerId(1), bind).map_err(io_error)?;
-        Ok(Self {
-            node: Node::new(PeerId(1), settings)?,
-            io,
-            manifest,
-            remote: Some(remote),
-            nonce: nonce(),
-            started: 0,
-            last_hello: 0,
-            discovery: None,
-            admissions: BTreeMap::new(),
-        })
+        Self::client_with_io(settings, manifest, io, remote)
     }
 }
 impl<T: SocketIo> Connection<T> {
     pub fn host_with_io(settings: Settings, manifest: Manifest, io: T) -> Result<Self> {
-        Ok(Self {
-            node: Node::new(HOST, settings)?,
-            io,
-            manifest,
-            remote: None,
-            nonce: nonce(),
-            started: 0,
-            last_hello: 0,
-            discovery: None,
-            admissions: BTreeMap::new(),
-        })
+        Self::new(settings, manifest, io, HOST, None)
     }
     pub fn client_with_io(
         settings: Settings,
         manifest: Manifest,
         io: T,
-        remote: SocketAddr,
+        remote: T::Address,
+    ) -> Result<Self> {
+        Self::new(settings, manifest, io, PeerId(1), Some(remote))
+    }
+    pub(crate) fn new(
+        settings: Settings,
+        manifest: Manifest,
+        io: T,
+        local: PeerId,
+        remote: Option<T::Address>,
     ) -> Result<Self> {
         Ok(Self {
-            node: Node::new(PeerId(1), settings)?,
+            node: Node::new(local, settings)?,
             io,
             manifest,
-            remote: Some(remote),
+            remote,
             nonce: nonce(),
             started: 0,
             last_hello: 0,
@@ -153,8 +133,11 @@ impl<T: SocketIo> Connection<T> {
             admissions: BTreeMap::new(),
         })
     }
+    pub(crate) fn set_remote(&mut self, remote: T::Address) {
+        self.remote = Some(remote);
+    }
     pub fn poll(&mut self, now: u64) -> Result<()> {
-        if self.started == 0 {
+        if self.remote.is_some() && self.started == 0 {
             self.started = now.max(1);
         }
         if let Some(address) = self.remote
@@ -185,7 +168,7 @@ impl<T: SocketIo> Connection<T> {
                 continue;
             };
             match c {
-                Control::Hello { nonce, manifest } if self.remote.is_none() => {
+                Control::Hello { nonce, manifest } if self.node.local == HOST => {
                     if let Some((old, slot, session)) = self.admissions.get(&address)
                         && *old == nonce
                         && self.node.links.contains_key(&PeerId(*slot as u64))
@@ -242,7 +225,8 @@ impl<T: SocketIo> Connection<T> {
                         ((crate::ip::nonce() as u128) << 64) | crate::ip::nonce() as u128,
                     );
                     self.io.add_route(PeerId(slot as u64), address)?;
-                    self.node.add_peer(PeerId(slot as u64), session, now)?;
+                    self.node
+                        .add_peer_with_mtu(PeerId(slot as u64), session, now, T::MTU)?;
                     self.admissions.insert(address, (nonce, slot, session));
                     self.io
                         .raw_send(
@@ -266,7 +250,8 @@ impl<T: SocketIo> Connection<T> {
                     self.node.local = PeerId(slot as u64);
                     self.io.set_local(self.node.local);
                     self.io.add_route(HOST, address)?;
-                    self.node.add_peer(HOST, SessionId(session), now)?;
+                    self.node
+                        .add_peer_with_mtu(HOST, SessionId(session), now, T::MTU)?;
                 }
                 Control::Reject { nonce, reason }
                     if self.remote == Some(address) && nonce == self.nonce =>
@@ -279,7 +264,7 @@ impl<T: SocketIo> Connection<T> {
         }
         // Remove routes promptly, so a vacated lobby slot can reconnect from a new address.
         for slot in 1..4 {
-            if !self.node.links.contains_key(&PeerId(slot)) && self.remote.is_none() {
+            if !self.node.links.contains_key(&PeerId(slot)) && self.node.local == HOST {
                 self.io.remove_route(PeerId(slot));
             }
         }
@@ -287,11 +272,11 @@ impl<T: SocketIo> Connection<T> {
             self.node.links.contains_key(&PeerId(*slot as u64))
                 && self.io.route(PeerId(*slot as u64)) == Some(*address)
         });
-        if let Some(d) = &self.discovery {
+        if let Some((d, port)) = &self.discovery {
             let _ = d.answer(
                 &Advertisement {
                     name: self.node.settings.name.clone(),
-                    port: self.io.address().map_err(io_error)?.port(),
+                    port: *port,
                     occupied: self.node.players.len() as u8,
                     capacity: self.node.settings.capacity() as u8,
                     nonce: 0,

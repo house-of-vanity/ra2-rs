@@ -111,7 +111,7 @@ pub(super) fn setup(mut commands: Commands) {
     label(
         &mut commands,
         panel,
-        "OPEN ARENA",
+        env!("CARGO_PKG_NAME"),
         13.0,
         Color::srgb(0.45, 0.65, 0.76),
     );

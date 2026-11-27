@@ -1076,7 +1076,7 @@ pub fn input(
                 break;
             }
         }
-    } else {
+    } else if ui.focused.is_empty() {
         let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
         if ctrl && keys.just_pressed(KeyCode::KeyZ) {
             editor.document.undo();

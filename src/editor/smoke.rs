@@ -148,7 +148,7 @@ pub fn run(
         27 => {
             events.0.push(UiEvent::Value {
                 name: "bot name textbox".into(),
-                value: "Open Arena compatibility check".into(),
+                value: "ra2-rs compatibility check".into(),
             });
             click(&mut events, "snapshot button");
         }

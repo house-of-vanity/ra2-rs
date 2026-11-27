@@ -38,7 +38,7 @@ pub struct MenuAssets {
 }
 
 pub fn load(mut commands: Commands, options: Res<Options>, mut images: ResMut<Assets<Image>>) {
-    let path = options.game_dir.join(".open-arena/menu.ron");
+    let path = options.game_dir.join(".ra2-rs/menu.ron");
     let theme: Theme = ron::from_str(
         &std::fs::read_to_string(path)
             .unwrap_or_else(|_| include_str!("../../config/menu.ron").into()),

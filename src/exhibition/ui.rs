@@ -93,6 +93,13 @@ pub(crate) fn input(
                     continue;
                 }
                 state.popup = None;
+                if s.exhibition_help {
+                    if name == "close button" {
+                        s.exhibition_help = false;
+                        s.revision += 1;
+                    }
+                    continue;
+                }
                 if s.error.is_some() && (name == "ok button" || name == "cancel button") {
                     s.error = None;
                 } else if s.picker.is_some() {
@@ -134,8 +141,11 @@ pub(crate) fn input(
                         "heavyweight cb" => s.weight = Some(2),
                         "start game button" => s.start = true,
                         "continue button" => nav.page = Page::Exhibition,
-                        "Quit Session button" | "main menu button" => nav.page = Page::Main,
-                        "options button" => {
+                        "MainMenu button" | "Quit Session button" | "main menu button" => {
+                            nav.page = Page::Main
+                        }
+                        "Help button" => s.exhibition_help = true,
+                        "Options button" | "options button" => {
                             nav.back = nav.page;
                             nav.page = Page::Settings;
                             draft.0 = settings.clone();
@@ -204,18 +214,9 @@ pub(crate) fn bind(
         state.popup = None;
     }
     *last = Some((page, s.revision));
-    *state = State {
-        revision: state.revision + 1,
-        scroll: state.scroll.clone(),
-        focused: state.focused.clone(),
-        popup: state.popup.clone(),
-        ..default()
-    };
+    state.rebuild();
     if page == Page::Exhibition {
         state.root = assets.widget("exhibition/exhib_setup.gib").ok();
-        if let Ok(footer) = assets.widget("common/bottomnav_main.gib") {
-            state.slots.insert("bottom slot".into(), footer);
-        }
         let file = ["gametype", "arena", "exhib_robots"][s.tab];
         if let Some(mut panel) = widget(&assets, &format!("exhibition/{file}.gib")) {
             if s.tab == 1
@@ -370,6 +371,14 @@ pub(crate) fn bind(
             }
             state.dialogs.push(Arc::new(dialog));
         }
+    }
+    if s.exhibition_help {
+        crate::legacy_ui::widgets::help(
+            &mut state,
+            &assets,
+            "Exhibition Help",
+            "help/help_exhibition.gib",
+        );
     }
     if let Some(error) = &s.error
         && let Some(mut dialog) = widget(&assets, "common/messagebox.gib")

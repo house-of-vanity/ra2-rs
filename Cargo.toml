@@ -1,6 +1,6 @@
 [package]
-name = "physics-demo"
-version = "0.1.0"
+name = "ra2-rs"
+version = "0.1.0-rc1"
 edition = "2024"
 rust-version = "1.97.1"
 
@@ -18,7 +18,7 @@ bevy = { version = "=0.20.0", default-features = false, features = [
     "bevy_asset", "bevy_camera", "bevy_color", "bevy_core_pipeline",
     "bevy_image", "bevy_light", "bevy_log", "bevy_material", "bevy_mesh",
     "bevy_pbr", "bevy_render", "bevy_shader", "bevy_window", "bevy_winit",
-    "wayland", "x11", "bevy_ui", "bevy_ui_render", "bevy_ui_widgets", "ui_picking", "bevy_text", "default_font", "png", "bmp", "tga",
+    "wayland", "x11", "system_clipboard", "bevy_ui", "bevy_ui_render", "bevy_ui_widgets", "ui_picking", "bevy_text", "default_font", "png", "bmp", "tga",
 ] }
 bevy_rapier3d = { version = "=0.37.0", default-features = false, features = ["dim3", "parallel", "profiler", "fem"] }
 arena-core = { path = "crates/arena-core" }
@@ -26,6 +26,8 @@ ra2-formats = { path = "crates/ra2-formats" }
 arena-runtime = { path = "crates/arena-runtime" }
 
 [dependencies]
+ab_glyph = "=0.2.32"
+unicode-segmentation = "=1.13.3"
 bevy.workspace = true
 bevy_rapier3d.workspace = true
 arena-core.workspace = true
@@ -37,6 +39,19 @@ blake3 = "=1.8.7"
 postcard = { version = "=1.1.3", default-features = false }
 serde.workspace = true
 ron.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+winit = { version = "=0.30.13", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSData"] }
+
+[build-dependencies]
+embed-resource = "=3.0.12"
 
 [profile.dev]
 opt-level = 1

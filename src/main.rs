@@ -2,6 +2,7 @@ mod battle;
 mod config;
 mod content;
 mod damage;
+mod desktop;
 mod destruction;
 mod editor;
 mod exhibition;
@@ -48,8 +49,12 @@ fn main() {
         println!("{}", launch::USAGE);
         return;
     }
+    if std::env::args_os().skip(1).any(|a| a == "--font-license") {
+        print!(include_str!("../assets/fonts/Ubuntu-LICENSE.txt"));
+        return;
+    }
     if std::env::args_os().skip(1).any(|a| a == "--version") {
-        println!("physics-demo {}", env!("CARGO_PKG_VERSION"));
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return;
     }
     let options = Options::parse().unwrap_or_else(|error| {
@@ -75,13 +80,21 @@ fn main() {
         std::process::exit(1)
     });
     let store = settings::SettingsStore(options.settings_file.clone());
-    let preferences = if options.smoke_test || options.editor_smoke_test {
+    let offscreen_check =
+        options.workshop_check || options.exhibition_check || options.multiplayer_check;
+    let preferences = if offscreen_check {
+        // These checks render to an 800x600 texture and inject logical window coordinates.
+        settings::EngineSettings {
+            resolution: [800, 600],
+            ..Default::default()
+        }
+    } else if options.smoke_test || options.editor_smoke_test {
         settings::EngineSettings::default()
     } else {
         store.load()
     };
     let mut window = Window {
-        title: "Robot Arena 2 / Open Arena".into(),
+        title: env!("CARGO_PKG_NAME").into(),
         mode: preferences.window_mode(),
         present_mode: preferences.present_mode(),
         ..default()
@@ -89,20 +102,14 @@ fn main() {
     window
         .resolution
         .set_physical_resolution(preferences.resolution[0], preferences.resolution[1]);
-    let workshop_check =
-        options.workshop_check || options.exhibition_check || options.multiplayer_check;
     let mut app = App::new();
     app.insert_resource(options)
         .insert_resource(config)
         .insert_resource(preferences)
         .insert_resource(store)
         .insert_resource(ClearColor(Color::srgb(0.045, 0.065, 0.10)));
-    let plugins = DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(window),
-        close_when_requested: false,
-        ..default()
-    });
-    if workshop_check {
+    let plugins = desktop::plugins(window);
+    if offscreen_check {
         app.add_plugins(plugins.disable::<bevy::winit::WinitPlugin>())
             .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
                 std::time::Duration::from_secs_f64(1. / 60.),

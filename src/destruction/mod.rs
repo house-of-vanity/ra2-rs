@@ -144,14 +144,10 @@ pub fn run(options: Options) -> Result<(), String> {
             focus: Vec3::new(0.0, 0.35, 0.0),
         })
         .insert_resource(ClearColor(Color::srgb(0.025, 0.035, 0.055)))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Robot Arena 2 / Destruction Lab".into(),
-                resolution: (1440, 960).into(),
-                present_mode: bevy::window::PresentMode::AutoNoVsync,
-                ..default()
-            }),
-            close_when_requested: false,
+        .add_plugins(crate::desktop::plugins(Window {
+            title: concat!(env!("CARGO_PKG_NAME"), " / Destruction Lab").into(),
+            resolution: (1440, 960).into(),
+            present_mode: bevy::window::PresentMode::AutoNoVsync,
             ..default()
         }))
         .add_plugins((

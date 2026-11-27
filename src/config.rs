@@ -1,4 +1,4 @@
-//! Demo/game rules are configuration, not assumptions inside importers or adapters.
+//! Game rules are loaded independently of the asset importers and physics adapters.
 use serde::Deserialize;
 use std::path::Path;
 
@@ -53,7 +53,7 @@ impl Config {
         let config: Self = ron::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         if config.version != 1 {
             return Err(format!(
-                "Unsupported demo configuration version {}",
+                "Unsupported game configuration version {}",
                 config.version
             ));
         }

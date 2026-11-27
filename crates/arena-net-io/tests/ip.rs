@@ -72,9 +72,7 @@ impl DatagramIo for MemorySocket {
     }
 }
 impl SocketIo for MemorySocket {
-    fn address(&self) -> std::io::Result<SocketAddr> {
-        Ok(addr(self.socket))
-    }
+    type Address = SocketAddr;
     fn raw_send(&self, a: SocketAddr, b: &[u8]) -> std::io::Result<usize> {
         let mut bus = self.bus.borrow_mut();
         let now = bus.now;

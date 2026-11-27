@@ -5,6 +5,8 @@ use crate::{
     legacy_ui::{Cell, State, UiEvent, assets::LegacyAssets, widgets::*},
 };
 use arena_core::match_rules::Mode;
+use bevy::clipboard::Clipboard;
+use ra2_formats::gib::Widget;
 const MODES: [(&str, Mode); 5] = [
     ("deathmatch checkbox", Mode::Deathmatch),
     ("battle royal checkbox", Mode::BattleRoyal),
@@ -30,11 +32,30 @@ pub(super) fn input(
     mut sounds: ResMut<crate::ui_sound::Sounds>,
     mut draft: ResMut<crate::frontend::Draft>,
     settings: Res<crate::settings::EngineSettings>,
+    mut clipboard: ResMut<Clipboard>,
+    time: Res<Time<Real>>,
 ) {
     if nav.page != Page::Multiplayer {
         return;
     }
     for event in std::mem::take(&mut events.0) {
+        let event = match event {
+            UiEvent::Submit(field) if field == "chat textbox" && net.screen == Screen::Lobby => {
+                let message = std::mem::take(&mut net.chat_input);
+                if !message.is_empty() {
+                    net.send(Request::Chat(message));
+                }
+                state.focused = field;
+                net.revision += 1;
+                continue;
+            }
+            UiEvent::Submit(field) if field == "IP address" && net.ip_dialog => UiEvent::Activate {
+                name: "connect button".into(),
+                owner: String::new(),
+                point: Vec2::ZERO,
+            },
+            other => other,
+        };
         match event {
             UiEvent::Activate { name, owner, .. } => {
                 sounds.play("Sounds/button_click.wav");
@@ -67,25 +88,49 @@ pub(super) fn input(
                     net.revision += 1;
                     continue;
                 }
+                if net.help {
+                    if name == "close button" {
+                        net.help = false;
+                        net.revision += 1;
+                    }
+                    continue;
+                }
                 if net.ip_dialog {
                     match name.as_str() {
                         "cancel button" => net.ip_dialog = false,
                         "connect button" => {
                             let result = (|| {
-                                let addr = service::address(&net.ip)?;
                                 let m = net
                                     .manifest
                                     .clone()
                                     .ok_or("Compatibility manifest unavailable")?;
                                 let cfg = net.settings.clone();
+                                let (command, status) = if net.join_iroh {
+                                    let target: JoinTarget = net.join_input.parse()?;
+                                    let status = match target {
+                                        JoinTarget::Code(code) => {
+                                            format!("Finding room {code} on Mainline...")
+                                        }
+                                        JoinTarget::Endpoint(_) => {
+                                            "Connecting to EndpointID...".into()
+                                        }
+                                    };
+                                    (service::Command::JoinIroh(cfg, m, target), status)
+                                } else {
+                                    let addr = service::address(&net.ip)?;
+                                    (
+                                        service::Command::Connect(cfg, m, addr),
+                                        format!("Connecting to {addr}..."),
+                                    )
+                                };
                                 net.service
                                     .as_ref()
                                     .ok_or("Network worker unavailable")?
-                                    .send(service::Command::Connect(cfg, m, addr))?;
+                                    .send(command)?;
                                 net.host = false;
                                 net.ip_dialog = false;
                                 net.screen = Screen::Lobby;
-                                net.status = format!("Connecting to {addr}...");
+                                net.status = status;
                                 net.selected = net.selected.or(Some(0));
                                 Ok(())
                             })();
@@ -113,11 +158,12 @@ pub(super) fn input(
                         }
                     }
                 } else {
-                    if let Some(index) = name
+                    if let Some(addr) = name
                         .strip_prefix("server:")
-                        .and_then(|n| n.parse::<usize>().ok())
+                        .and_then(|s| s.parse::<SocketAddr>().ok())
+                        && net.server_list.contains_key(&addr)
                     {
-                        net.selected_server = net.server_list.keys().nth(index).copied();
+                        net.selected_server = Some(addr);
                     }
                     if let Some(index) = name
                         .strip_prefix("arena:")
@@ -142,34 +188,124 @@ pub(super) fn input(
                             net.settings.arena = a.key.clone();
                         }
                     }
-                    match name.as_str(){
-    "IROH button"|"Internet radio but"=>net.error=Some("IROH invite connections are not implemented yet. Use LAN or IP Connect.".into()),
-    "Refresh button"|"LAN radio but"=>{net.server_list.clear();if let Some(s)=&net.service{let _=s.send(service::Command::Search);}net.status="Searching the local network...".into();}
-    "Create Game button"=>{net.screen=Screen::Create;net.tab=0;net.host=true;}
-    "IP connect button"=>net.ip_dialog=true,
-    "Join game button"=>{if let Some(addr)=net.selected_server{net.ip=addr.to_string();net.ip_dialog=true;}else{net.error=Some("Select a LAN game or use IP Connect".into());}}
-    "mp settings button"=>net.tab=0,"gametype button"=>net.tab=1,"arena button"=>net.tab=2,
-    "hazard checkbox"=>net.settings.hazards=!net.settings.hazards,
-    "all classes cb"=>net.settings.weight=None,"lightweight cb"=>net.settings.weight=Some(0),"mediumweight cb"=>net.settings.weight=Some(1),"heavyweight cb"=>net.settings.weight=Some(2),
-    "start game button"=>{
-     let result=(||{let m=net.manifest.clone().ok_or("Compatibility manifest unavailable")?;let cfg=net.settings.clone();net.service.as_ref().ok_or("Network worker unavailable")?.send(service::Command::Host(cfg,m,GAME_PORT))?;net.host=true;net.local=0;net.status=format!("Hosting on UDP port {GAME_PORT}");let index=net.selected.unwrap_or(0);net.choose(&battle,index)?;Ok(())})();show_error(&mut net,result);
-    }
-    "cancel game button"=>net.screen=Screen::Browse,
-    "disconnect button"=>{net.disconnect();battle.network=false;net.service=Some(service::Service::spawn());}
-    "begin match button"=>net.send(Request::Start),
-    "accept button"=>{let settings=net.settings.clone();net.send(Request::Settings(settings));net.screen=Screen::Lobby;},
-    "cancel button"=>net.screen=Screen::Lobby,
-    "settings button" if net.host=>{net.screen=Screen::Create;net.tab=1;}
-    "main menu button"|"Quit Session button"=>nav.page=Page::Main,
-    "options button"=>{nav.back=nav.page;nav.page=Page::Settings;draft.0=settings.clone();}
-    _=>{
-     let key=if name.starts_with('p'){&name}else{&owner};
-     if let Some(slot)=key.get(1..2).and_then(|n|n.parse::<usize>().ok()) && slot==net.local {
-      if key.ends_with("ready checkbox"){let ready=!net.players.iter().find(|p|p.slot as usize==slot).is_some_and(|p|p.ready);net.send(Request::Ready(ready));}
-      else if key.ends_with("change robot button") || key.ends_with("bot img") {net.picker=true;net.picker_bot=net.selected;net.picker_team=net.selected.and_then(|i|battle.library.get(i)).map_or_else(String::new,|e|e.team_key.clone());}
-     }
-    }
-   }
+                    match name.as_str() {
+                        "IROH button" | "Internet radio but" | "Internet Label"
+                            if net.screen == Screen::Browse =>
+                        {
+                            net.join_iroh = true;
+                            net.ip_dialog = true;
+                            state.focused = "IP address".into();
+                        }
+                        "internet radio but" | "internet label"
+                            if net.screen == Screen::Create && net.players.is_empty() =>
+                        {
+                            net.invite.get_or_insert_with(HostInvite::generate);
+                        }
+                        "LAN radio but" | "lan label"
+                            if net.screen == Screen::Create && net.players.is_empty() =>
+                        {
+                            net.invite = None;
+                            net.copied_endpoint = false;
+                        }
+                        "Help button" => net.help = true,
+                        "copy endpoint" => {
+                            if let Some(invite) = &net.invite {
+                                match clipboard.set_text(invite.endpoint_id().to_string()) {
+                                    Ok(()) => net.copied_endpoint = true,
+                                    Err(e) => {
+                                        net.error = Some(format!("Could not copy EndpointID: {e}"))
+                                    }
+                                }
+                            }
+                        }
+                        "Refresh button" | "LAN radio but" if net.screen == Screen::Browse => {
+                            net.refresh_servers(time.elapsed());
+                        }
+                        "Create Game button" => {
+                            net.screen = Screen::Create;
+                            net.tab = 0;
+                            net.host = true;
+                            net.invite = None;
+                            net.publication = None;
+                            net.copied_endpoint = false;
+                        }
+                        "IP connect button" => {
+                            net.join_iroh = false;
+                            net.ip_dialog = true;
+                            state.focused = "IP address".into();
+                        }
+                        "Join game button" => {
+                            if let Some(addr) = net.selected_server {
+                                net.ip = addr.to_string();
+                                net.join_iroh = false;
+                                net.ip_dialog = true;
+                            } else {
+                                net.error = Some(
+                                    "Select a LAN game, use IP Connect, or join by code".into(),
+                                );
+                            }
+                        }
+                        "mp settings button" => net.tab = 0,
+                        "gametype button" => net.tab = 1,
+                        "arena button" => net.tab = 2,
+                        "hazard checkbox" => net.settings.hazards = !net.settings.hazards,
+                        "all classes cb" => net.settings.weight = None,
+                        "lightweight cb" => net.settings.weight = Some(0),
+                        "mediumweight cb" => net.settings.weight = Some(1),
+                        "heavyweight cb" => net.settings.weight = Some(2),
+                        "start game button" => {
+                            let result = net.start_host(&battle);
+                            show_error(&mut net, result);
+                        }
+                        "cancel game button" => {
+                            net.screen = Screen::Browse;
+                            net.invite = None;
+                            net.copied_endpoint = false;
+                        }
+                        "disconnect button" => {
+                            net.disconnect();
+                            battle.network = false;
+                        }
+                        "begin match button" => net.send(Request::Start),
+                        "accept button" => {
+                            let settings = net.settings.clone();
+                            net.pending_ready = None;
+                            net.send(Request::Settings(settings));
+                            net.screen = Screen::Lobby;
+                        }
+                        "cancel button" => net.screen = Screen::Lobby,
+                        "settings button" if net.host => {
+                            net.screen = Screen::Create;
+                            net.tab = 1;
+                        }
+                        "MainMenu button" | "main menu button" | "Quit Session button" => {
+                            nav.page = Page::Main
+                        }
+                        "Options button" | "options button" => {
+                            nav.back = nav.page;
+                            nav.page = Page::Settings;
+                            draft.0 = settings.clone();
+                        }
+                        _ => {
+                            let key = if name.starts_with('p') { &name } else { &owner };
+                            if let Some(slot) = key.get(1..2).and_then(|n| n.parse::<usize>().ok())
+                                && slot == net.local
+                            {
+                                if key.ends_with("ready checkbox") {
+                                    net.toggle_ready();
+                                } else if key.ends_with("change robot button")
+                                    || key.ends_with("bot img")
+                                {
+                                    net.picker = true;
+                                    net.picker_bot = net.selected;
+                                    net.picker_team = net
+                                        .selected
+                                        .and_then(|i| battle.library.get(i))
+                                        .map_or_else(String::new, |e| e.team_key.clone());
+                                }
+                            }
+                        }
+                    }
                 }
                 net.revision += 1;
             }
@@ -188,10 +324,13 @@ pub(super) fn input(
 }
 fn value(n: &mut Multiplayer, b: &battle::Session, state: &mut State, key: &str, v: &str) {
     match key {
+        "IP address" if n.join_iroh => n.join_input = v.chars().take(128).collect(),
         "IP address" => n.ip = v.chars().take(128).collect(),
-        "server name textbox" => n.settings.name = v.chars().take(96).collect(),
-        "screen name" => n.name = v.chars().take(64).collect(),
-        "chat textbox" => n.chat_input = v.chars().take(256).collect(),
+        "server name textbox" => {
+            n.settings.name = v[..v.floor_char_boundary(96.min(v.len()))].into()
+        }
+        "screen name" => n.name = v[..v.floor_char_boundary(64.min(v.len()))].into(),
+        "chat textbox" => n.chat_input = v[..v.floor_char_boundary(256.min(v.len()))].into(),
         "team dropdown" => {
             if let Some((team, _)) = crate::content::robots::teams(&b.library)
                 .into_iter()
@@ -222,13 +361,13 @@ fn value(n: &mut Multiplayer, b: &battle::Session, state: &mut State, key: &str,
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn bind(
-    mut net: ResMut<Multiplayer>,
+    net: Res<Multiplayer>,
     battle: Res<battle::Session>,
     nav: Res<Navigation>,
     assets: Res<LegacyAssets>,
     mut state: ResMut<State>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut last: Local<Option<u64>>,
+    time: Res<Time<Real>>,
+    mut last: Local<Option<(u64, usize)>>,
 ) {
     if nav.page != Page::Multiplayer
         && !(nav.page == Page::Settings && nav.back == Page::Multiplayer)
@@ -236,87 +375,39 @@ pub(super) fn bind(
         *last = None;
         return;
     }
-    if keys.just_pressed(KeyCode::Enter)
-        && !net.chat_input.is_empty()
-        && net.screen == Screen::Lobby
-    {
-        let msg = std::mem::take(&mut net.chat_input);
-        net.send(Request::Chat(msg));
-        net.revision += 1;
-    }
-    if *last == Some(net.revision) {
+    let dots = if net.screen == Screen::Browse {
+        net.search.dots(time.elapsed())
+    } else {
+        0
+    };
+    let version = (net.revision, dots);
+    if *last == Some(version) {
         return;
     }
-    *last = Some(net.revision);
-    *state = State {
-        revision: state.revision + 1,
-        focused: state.focused.clone(),
-        scroll: state.scroll.clone(),
-        popup: state.popup.clone(),
-        ..default()
-    };
-    if let Ok(footer) = assets.widget("common/bottomnav_main.gib") {
-        state.slots.insert("bottom slot".into(), footer);
-    }
+    *last = Some(version);
+    state.rebuild();
     match net.screen {
         Screen::Browse => {
             if let Some(mut root) = widget(&assets, "multiplayer/multiplayer.gib") {
-                // Replace the original GameSpy image in its original group with an ordinary button.
-                fn original_button(
-                    w: &ra2_formats::gib::Widget,
-                ) -> Option<ra2_formats::gib::Widget> {
-                    if w.kind == "Border" && w.find("IP connect button").is_some() {
-                        return Some(w.clone());
-                    }
-                    w.wrapped
-                        .as_deref()
-                        .and_then(original_button)
-                        .or_else(|| w.children.iter().find_map(original_button))
-                }
-                let button = original_button(&root);
-                fn replace(
-                    w: &mut ra2_formats::gib::Widget,
-                    button: &Option<ra2_formats::gib::Widget>,
+                if let Some(button) = action_button(
+                    &root,
+                    "IP connect button",
+                    "IROH button",
+                    "Join by code",
+                    0,
+                    0,
+                    128,
                 ) {
-                    if w.name() == "Gamespy grp" {
-                        w.children.clear();
-                        if let Some(mut b) = button.clone() {
-                            fn caption(w: &mut ra2_formats::gib::Widget) {
-                                if matches!(w.kind.as_str(), "Border" | "Caption" | "Button") {
-                                    w.fields.insert("Position".into(), vec!["0 0 0 0".into()]);
-                                    w.fields.insert("Size".into(), vec!["128 0 28 0".into()]);
-                                }
-                                if w.kind == "Button" {
-                                    w.fields.insert("Name".into(), vec!["IROH button".into()]);
-                                }
-                                if w.kind == "Text" {
-                                    w.fields.insert("_Text".into(), vec!["IROH".into()]);
-                                }
-                                if let Some(x) = &mut w.wrapped {
-                                    caption(x);
-                                }
-                                for x in &mut w.children {
-                                    caption(x);
-                                }
-                            }
-                            caption(&mut b);
-                            w.children.push(b);
-                        }
-                        return;
-                    }
-                    if let Some(x) = &mut w.wrapped {
-                        replace(x, button);
-                    }
-                    for x in &mut w.children {
-                        replace(x, button);
+                    if let Some(group) = find_mut(&mut root, "Gamespy grp") {
+                        group.children = vec![button];
                     }
                 }
-                replace(&mut root, &button);
+                text(&mut root, "Internet Label", "Iroh");
                 patch(&mut root, "server listbox", "Columns", "5");
                 state.root = Some(Arc::new(root));
             }
             state.checked.insert("LAN radio but".into(), true);
-            state.disabled.insert("Internet radio but".into());
+            state.interactive.insert("Internet Label".into());
             state.cells.insert(
                 "heading grid".into(),
                 ["Game name", "Players", "Address", "Port", "Connection"]
@@ -327,31 +418,42 @@ pub(super) fn bind(
                     })
                     .collect(),
             );
-            state.cells.insert(
-                "server listbox".into(),
-                net.server_list
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, (a, ad))| {
-                        let selected = net.selected_server == Some(*a);
-                        [
-                            ad.name.clone(),
-                            format!("{}/{}", ad.occupied, ad.capacity),
-                            a.ip().to_string(),
-                            a.port().to_string(),
-                            "LAN".into(),
-                        ]
-                        .into_iter()
-                        .map(move |label| Cell {
-                            key: format!("server:{i}"),
-                            label,
-                            selected,
-                            ..default()
-                        })
+            let mut rows: Vec<Cell> = net
+                .server_list
+                .iter()
+                .flat_map(|(addr, ad)| {
+                    let selected = net.selected_server == Some(*addr);
+                    [
+                        ad.name.clone(),
+                        format!("{}/{}", ad.occupied, ad.capacity),
+                        addr.ip().to_string(),
+                        addr.port().to_string(),
+                        "LAN".into(),
+                    ]
+                    .into_iter()
+                    .map(move |label| Cell {
+                        key: format!("server:{addr}"),
+                        label,
+                        selected,
+                        ..default()
                     })
-                    .collect(),
-            );
-            state.values.insert("status".into(), net.status.clone());
+                })
+                .collect();
+            let line = match &net.search {
+                SearchState::Searching { .. } => Some(format!("Searching{}", ".".repeat(dots))),
+                SearchState::Finished if rows.is_empty() => Some("No LAN games found".into()),
+                SearchState::Failed(_) => Some("Search unavailable".into()),
+                _ => None,
+            };
+            if let Some(label) = line {
+                rows.push(Cell { label, ..default() });
+            }
+            state.cells.insert("server listbox".into(), rows);
+            let status = match &net.search {
+                SearchState::Failed(reason) => format!("LAN search failed: {reason}"),
+                _ => net.status.clone(),
+            };
+            state.values.insert("status".into(), status);
         }
         Screen::Create => {
             state.root = assets
@@ -375,8 +477,29 @@ pub(super) fn bind(
                     visible(&mut panel, "password textbox", false);
                     visible(&mut panel, "connection speed label", false);
                     visible(&mut panel, "connection dropdown", false);
-                    state.disabled.insert("internet radio but".into());
-                    state.checked.insert("LAN radio but".into(), true);
+                    text(&mut panel, "internet label", "Iroh native networking");
+                    patch(&mut panel, "LAN internet optgrp", "Size", "270 0 55 0");
+                    patch(&mut panel, "internet label", "Size", "190 0 16 0");
+                    state
+                        .checked
+                        .insert("internet radio but".into(), net.invite.is_some());
+                    state
+                        .checked
+                        .insert("LAN radio but".into(), net.invite.is_none());
+                    if net.players.is_empty() {
+                        state
+                            .interactive
+                            .extend(["internet label".into(), "lan label".into()]);
+                    } else {
+                        state
+                            .disabled
+                            .extend(["internet radio but".into(), "LAN radio but".into()]);
+                    }
+                    if net.invite.is_some() {
+                        state.visibility.insert("password textbox".into(), false);
+                        state.visibility.insert("connection dropdown".into(), false);
+                        invite_controls(&mut panel, &assets, &net, 50, 149);
+                    }
                 }
                 if net.tab == 2
                     && let Some(a) = battle.arenas.iter().find(|a| a.key == net.settings.arena)
@@ -439,7 +562,37 @@ pub(super) fn bind(
             );
         }
         Screen::Lobby | Screen::Loading | Screen::Playing => {
-            state.root = assets.widget("multiplayer/prematch.gib").ok();
+            if let Some(mut root) = widget(&assets, "multiplayer/prematch.gib") {
+                // The stock prematch sidebar reserves a full panel for spectators.
+                if (net.invite.is_some() || (!net.host && net.players.is_empty()))
+                    && let Some(sidebar) = find_parent_of(&mut root, "spectators label")
+                {
+                    sidebar.children.clear();
+                    if net.invite.is_some() {
+                        invite_controls(sidebar, &assets, &net, 5, 18);
+                    } else {
+                        let lines = if net.join_iroh
+                            && net
+                                .join_input
+                                .parse::<arena_net_io::native::RoomCode>()
+                                .is_ok()
+                        {
+                            vec!["Finding room on Mainline", net.join_input.as_str()]
+                        } else {
+                            vec!["Connecting to host..."]
+                        };
+                        for (i, line) in lines.into_iter().enumerate() {
+                            sidebar.children.push(invite_text(
+                                line,
+                                4,
+                                18 + i as u16 * 20,
+                                "fg_mcn14",
+                            ));
+                        }
+                    }
+                }
+                state.root = Some(Arc::new(root));
+            }
             state.values.insert("screen name".into(), net.name.clone());
             state.values.insert(
                 "arena name".into(),
@@ -476,6 +629,11 @@ pub(super) fn bind(
                     },
                 ) {
                     if let Some(p) = p {
+                        // Both text rows sit inside the two-pixel frame in activeplayer.gib.
+                        patch(&mut card, "team name", "Position", "2 0 2 0");
+                        patch(&mut card, "team name", "Size", "146 0 14 0");
+                        patch(&mut card, "bot name", "Position", "2 0 16 0");
+                        patch(&mut card, "bot name", "Size", "146 0 16 0");
                         text(&mut card, "team name", &p.team);
                         text(&mut card, "bot name", &p.bot_name);
                         visible(&mut card, "spectator [TextBox]", false);
@@ -504,24 +662,28 @@ pub(super) fn bind(
                         .insert(format!("player{} group", slot + 1), Arc::new(card));
                     state.checked.insert(
                         format!("p{slot}/ready checkbox"),
-                        p.is_some_and(|p| p.ready),
+                        if slot == net.local {
+                            net.local_ready()
+                        } else {
+                            p.is_some_and(|p| p.ready)
+                        },
                     );
-                    if slot != net.local
-                        || p.is_none_or(|p| {
-                            net.bots.get(&p.digest).is_none_or(|b| {
-                                net.settings
-                                    .weight
-                                    .is_some_and(|w| b.weight_class != w as u32)
-                            })
+                    if slot != net.local {
+                        state.read_only.insert(format!("p{slot}/ready checkbox"));
+                    } else if p.is_none_or(|p| {
+                        net.bots.get(&p.digest).is_none_or(|b| {
+                            net.settings
+                                .weight
+                                .is_some_and(|w| b.weight_class != w as u32)
                         })
-                    {
+                    }) {
                         state.disabled.insert(format!("p{slot}/ready checkbox"));
                     }
                 }
             }
             if !net.host
-                || net.players.len() < net.settings.minimum()
-                || !net.players.iter().all(|p| p.ready)
+                || !net.start_available
+                || net.pending_ready.is_some()
                 || net.screen != Screen::Lobby
             {
                 state.disabled.insert("begin match button".into());
@@ -532,9 +694,43 @@ pub(super) fn bind(
         }
     }
     if net.ip_dialog
-        && let Some(dialog) = widget(&assets, "multiplayer/ip_connect.gib")
+        && let Some(mut dialog) = widget(&assets, "multiplayer/ip_connect.gib")
     {
-        state.values.insert("IP address".into(), net.ip.clone());
+        if net.join_iroh {
+            text(&mut dialog, "caption bar", "Join Iroh game");
+            fn join_labels(w: &mut Widget) {
+                if w.kind == "Text" {
+                    let label = w.value("_Text").trim();
+                    let replacement = if label.starts_with("Enter the server IP") {
+                        Some("Enter the room code or paste the host's EndpointID.")
+                    } else if label.starts_with("example:") {
+                        Some("Example: 0427-9136")
+                    } else {
+                        None
+                    };
+                    if let Some(value) = replacement {
+                        w.fields.insert("_Text".into(), vec![value.into()]);
+                    }
+                }
+                if let Some(inner) = w.wrapped.as_deref_mut() {
+                    join_labels(inner);
+                }
+                for child in &mut w.children {
+                    join_labels(child);
+                }
+            }
+            join_labels(&mut dialog);
+            patch(&mut dialog, "IP address", "Position", "28 0 97 0");
+            patch(&mut dialog, "IP address", "Size", "284 0 25 0");
+        }
+        state.values.insert(
+            "IP address".into(),
+            if net.join_iroh {
+                net.join_input.clone()
+            } else {
+                net.ip.clone()
+            },
+        );
         state.dialogs.push(Arc::new(dialog));
     }
     if net.picker
@@ -596,15 +792,157 @@ pub(super) fn bind(
         }
         state.dialogs.push(Arc::new(dialog));
     }
+    if net.help {
+        let instructions = match net.screen {
+            Screen::Browse => {
+                "Use Refresh List to find LAN games, IP Address for a direct connection, or Join by code to enter an eight-digit room code or EndpointID."
+            }
+            Screen::Create => {
+                "Choose Iroh native networking to get a room code. Start Game opens the lobby. Share the eight digits or click EndpointID to copy the full host ID."
+            }
+            _ => {
+                "Choose your robot and click Ready. When all players are ready, the host can begin the match."
+            }
+        };
+        help(
+            &mut state,
+            &assets,
+            "Multiplayer Help",
+            "help/help_blank.gib",
+        );
+        state.values.insert("help text".into(), instructions.into());
+    }
     if let Some(error) = &net.error
         && let Some(mut dialog) = widget(&assets, "common/messagebox.gib")
     {
         text(&mut dialog, "caption bar", "Multiplayer");
-        text(&mut dialog, "text box", error);
+        state.values.insert("text box".into(), error.clone());
         for key in ["yes button", "no button", "cancel button"] {
             visible(&mut dialog, key, false);
         }
         visible(&mut dialog, "ok button", true);
         state.dialogs.push(Arc::new(dialog));
     }
+}
+
+fn find_mut<'a>(w: &'a mut Widget, name: &str) -> Option<&'a mut Widget> {
+    if w.name() == name {
+        return Some(w);
+    }
+    w.wrapped
+        .as_deref_mut()
+        .and_then(|inner| find_mut(inner, name))
+        .or_else(|| {
+            w.children
+                .iter_mut()
+                .find_map(|child| find_mut(child, name))
+        })
+}
+
+fn find_parent_of<'a>(w: &'a mut Widget, name: &str) -> Option<&'a mut Widget> {
+    if w.children.iter().any(|child| child.name() == name) {
+        return Some(w);
+    }
+    w.wrapped
+        .as_deref_mut()
+        .and_then(|inner| find_parent_of(inner, name))
+        .or_else(|| {
+            w.children
+                .iter_mut()
+                .find_map(|child| find_parent_of(child, name))
+        })
+}
+
+fn action_button(
+    root: &Widget,
+    original: &str,
+    name: &str,
+    caption: &str,
+    x: u16,
+    y: u16,
+    width: u16,
+) -> Option<Widget> {
+    fn template<'a>(w: &'a Widget, name: &str) -> Option<&'a Widget> {
+        if w.kind == "Border"
+            && w.wrapped
+                .as_deref()
+                .is_some_and(|caption| caption.kind == "Caption" && caption.find(name).is_some())
+        {
+            return Some(w);
+        }
+        w.wrapped
+            .as_deref()
+            .and_then(|inner| template(inner, name))
+            .or_else(|| w.children.iter().find_map(|child| template(child, name)))
+    }
+    let mut button = template(root, original)?.clone();
+    let wrapper = button.wrapped.as_mut()?;
+    let control = wrapper.wrapped.as_mut()?;
+    control.fields.insert("Name".into(), vec![name.into()]);
+    control
+        .fields
+        .insert("Position".into(), vec![format!("{x} 0 {y} 0")]);
+    control
+        .fields
+        .insert("Size".into(), vec![format!("{width} 0 22 0")]);
+    let label = wrapper.children.iter_mut().find(|w| w.kind == "Text")?;
+    label.fields.insert("_Text".into(), vec![caption.into()]);
+    label
+        .fields
+        .insert("Position".into(), vec!["6 0 14 0".into()]);
+    Some(button)
+}
+
+fn invite_text(value: &str, x: u16, baseline: u16, font: &str) -> Widget {
+    Widget {
+        kind: "Text".into(),
+        wrapped: None,
+        children: vec![],
+        fields: [
+            ("_Font".to_string(), vec![font.into()]),
+            ("_Text".into(), vec![value.into()]),
+            ("Position".into(), vec![format!("{x} 0 {baseline} 0")]),
+            ("Visible".into(), vec!["true".into()]),
+        ]
+        .into(),
+    }
+}
+
+fn invite_controls(panel: &mut Widget, assets: &LegacyAssets, net: &Multiplayer, x: u16, y: u16) {
+    let Some(invite) = &net.invite else {
+        return;
+    };
+    panel
+        .children
+        .push(invite_text("Room code", x, y, "fg_mcn14"));
+    panel
+        .children
+        .push(invite_text(&invite.code.to_string(), x, y + 22, "fg_d18"));
+    let caption = if net.copied_endpoint {
+        "Copied!"
+    } else {
+        "EndpointID"
+    };
+    if let Ok(dialog) = assets.widget("multiplayer/ip_connect.gib")
+        && let Some(button) = action_button(
+            &dialog,
+            "connect button",
+            "copy endpoint",
+            caption,
+            x,
+            y + 29,
+            80,
+        )
+    {
+        panel.children.push(button);
+    }
+    let status = match net.publication {
+        None => "Opens on Start Game",
+        Some(Publication::Publishing(_)) => "Publishing code...",
+        Some(Publication::Ready(_)) => "Code ready",
+        Some(Publication::Retrying(_)) => "DHT retrying. Use EndpointID.",
+    };
+    panel
+        .children
+        .push(invite_text(status, x, y + 69, "fg_mcn14"));
 }

@@ -42,7 +42,7 @@ RESET создаёт новое испытание из документа и з
 - RESET / Home: восстановление.
 - Esc: Components. Вкладки: соответствующий раздел редактора.
 
-Параметры `garage` в `config/demo.ron` относятся к нашему решателю:
+Параметры `garage` в `config/game.ron` относятся к нашему решателю:
 `motor_force_scale`, `motor_damping`, `servo_stiffness`, `servo_damping`.
 Множитель силы по умолчанию 40 восстановлен из оригинального `0x4810e0`
 (константа `0x006a69f8`); остальные коэффициенты настраивают решатель Rapier. Начальная ориентация Burst вычисляется по оси шарнира,
@@ -245,7 +245,7 @@ N/A: эта работа не добавляет отсутствующий ре
 ```bash
 nix-shell --run 'cargo test --workspace'
 nix-shell --run 'cargo test -p ra2-formats --test mechanisms -- --ignored --nocapture'
-nix-shell --run 'cargo test -p physics-demo native_robot_drives_in_isolated_garage_without_mutating_editor -- --ignored --nocapture'
+nix-shell --run 'cargo test -p ra2-rs native_robot_drives_in_isolated_garage_without_mutating_editor -- --ignored --nocapture'
 ```
 
 Локальный корпус: 58 роботов и 229 сочленений решателя (включая отдельные

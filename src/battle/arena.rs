@@ -589,7 +589,7 @@ mod tests {
     use bevy::{ecs::system::RunSystemOnce, time::TimeUpdateStrategy};
 
     /// Run with:
-    /// RA2_GAME_DIR='/path/to/Robot Arena 2' cargo test --bin physics-demo \
+    /// RA2_GAME_DIR='/path/to/Robot Arena 2' cargo test --bin ra2-rs \
     ///   native_ai_obstacle_geometry -- --ignored --nocapture
     #[test]
     #[ignore = "requires original arena assets in RA2_GAME_DIR"]

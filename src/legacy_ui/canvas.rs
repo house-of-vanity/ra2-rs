@@ -126,49 +126,56 @@ impl Pixels {
         let mut pen = origin;
         let mut max_x = origin.x;
         for word in text.replace("\\n", "\n").split_inclusive([' ', '\n']) {
-            let advance = word
-                .chars()
-                .filter_map(|c| font.glyphs.get(&c))
-                .map(|g| g.advance)
-                .sum::<i32>() as f32;
-            if wrap && pen.x > origin.x && pen.x + advance > clip.max.x {
+            let line = word.trim_end_matches('\n');
+            if wrap && pen.x > origin.x && pen.x + font.measure(line) > clip.max.x {
                 pen.x = origin.x;
                 pen.y += font.line_height as f32;
             }
-            for ch in word.chars() {
-                if ch == '\n' {
-                    pen.x = origin.x;
-                    pen.y += font.line_height as f32;
-                    continue;
-                }
-                let Some(g) = font.glyphs.get(&ch).or_else(|| font.glyphs.get(&'?')) else {
-                    continue;
-                };
-                let x0 = (g.uv[0] * font.width as f32).round() as usize;
-                let y0 = (g.uv[1] * font.height as f32).round() as usize;
-                let x1 = (g.uv[2] * font.width as f32).round() as usize;
-                let y1 = (g.uv[3] * font.height as f32).round() as usize;
-                for sy in y0..y1.min(font.height) {
-                    for sx in x0..x1.min(font.width) {
-                        let x = pen.x + g.left as f32 + (sx - x0) as f32;
-                        let y = pen.y - g.top as f32 + (sy - y0) as f32;
-                        if !clip.contains(Vec2::new(x, y)) {
-                            continue;
-                        }
-                        let at = (sy * font.width + sx) * 4;
-                        let mut pixel = [0; 4];
-                        for i in 0..4 {
-                            pixel[i] =
-                                (font.rgba[at + i] as f32 * color[i]).clamp(0.0, 255.0) as u8;
-                        }
-                        self.pixel(x.round() as i32, y.round() as i32, pixel);
-                    }
-                }
-                pen.x += g.advance as f32;
-                max_x = max_x.max(pen.x);
+            pen.x += self.text_line(font, line, pen, color, clip);
+            max_x = max_x.max(pen.x);
+            if word.ends_with('\n') {
+                pen.x = origin.x;
+                pen.y += font.line_height as f32;
             }
         }
         Vec2::new(max_x - origin.x, pen.y - origin.y + font.line_height as f32)
+    }
+    /// Draw one literal line, including backslashes in editable paths and names.
+    pub fn text_line(
+        &mut self,
+        font: &BitmapFont,
+        text: &str,
+        origin: Vec2,
+        color: [f32; 4],
+        clip: Rect,
+    ) -> f32 {
+        let mut pen = origin.round();
+        for ch in text.chars() {
+            let Some(g) = font.glyph(ch) else {
+                continue;
+            };
+            let x0 = (g.uv[0] * font.width as f32).round() as usize;
+            let y0 = (g.uv[1] * font.height as f32).round() as usize;
+            let x1 = (g.uv[2] * font.width as f32).round() as usize;
+            let y1 = (g.uv[3] * font.height as f32).round() as usize;
+            for sy in y0..y1.min(font.height) {
+                for sx in x0..x1.min(font.width) {
+                    let x = pen.x + g.left as f32 + (sx - x0) as f32;
+                    let y = pen.y - g.top as f32 + (sy - y0) as f32;
+                    if !clip.contains(Vec2::new(x, y)) {
+                        continue;
+                    }
+                    let at = (sy * font.width + sx) * 4;
+                    let mut pixel = [0; 4];
+                    for i in 0..4 {
+                        pixel[i] = (font.rgba[at + i] as f32 * color[i]).clamp(0.0, 255.0) as u8;
+                    }
+                    self.pixel(x.round() as i32, y.round() as i32, pixel);
+                }
+            }
+            pen.x += g.advance as f32;
+        }
+        pen.x - origin.x.round()
     }
 }
 

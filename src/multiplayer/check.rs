@@ -14,12 +14,15 @@ use bevy::{
 use std::sync::mpsc;
 struct Harness {
     started: bool,
+    client_ready_sent: bool,
     host: Node,
     client: Node,
     wire: VirtualWire,
     commands: mpsc::Receiver<service::Command>,
     events: mpsc::SyncSender<service::Event>,
     frames: u64,
+    search: Option<(u64, u64)>,
+    search_labels: Vec<String>,
     stage: u32,
     wait: u32,
     release: Option<Entity>,
@@ -50,14 +53,6 @@ impl Plugin for CheckPlugin {
     }
 }
 fn setup(world: &mut World) {
-    {
-        let mut prefs = world.resource_mut::<crate::settings::EngineSettings>();
-        prefs.fullscreen = false;
-        prefs.resolution = [800, 600];
-    }
-    for mut window in world.query::<&mut Window>().iter_mut(world) {
-        window.resolution.set_physical_resolution(800, 600);
-    }
     let index = world
         .resource::<battle::Session>()
         .library
@@ -93,7 +88,7 @@ fn setup(world: &mut World) {
             Player {
                 slot: 1,
                 alias: "Remote".into(),
-                team: "Native".into(),
+                team: "Варяг".into(),
                 bot_name: robot.name.clone(),
                 digest: [0; 32],
                 size: 0,
@@ -140,12 +135,15 @@ fn setup(world: &mut World) {
     profile.loss_per_10000 = 100;
     world.insert_non_send(Harness {
         started: false,
+        client_ready_sent: false,
         host,
         client,
         wire: VirtualWire::new(profile, 19),
         commands,
         events,
         frames: 0,
+        search: None,
+        search_labels: Vec::new(),
         stage: 0,
         wait: 0,
         release: None,
@@ -163,7 +161,7 @@ fn tick(world: &mut World) {
     for c in h.commands.try_iter() {
         match c {
             service::Command::Game(r) => {
-                if h.stage >= 12 {
+                if (12..100).contains(&h.stage) {
                     h.client.request(r).unwrap();
                 } else {
                     h.host.request(r).unwrap();
@@ -173,9 +171,36 @@ fn tick(world: &mut World) {
                 h.started = true;
                 h.host.request(Request::Settings(settings)).unwrap();
             }
-            service::Command::Search => {}
+            service::Command::HostIroh(settings, _, invite) => {
+                h.started = true;
+                h.host.request(Request::Settings(settings)).unwrap();
+                h.events
+                    .try_send(service::Event::Publication(Publication::Ready(invite.code)))
+                    .unwrap();
+            }
+            service::Command::Search(id) => h.search = Some((id, h.frames)),
             service::Command::Stop => {}
             _ => panic!("Unexpected harness command"),
+        }
+    }
+    if let Some((nonce, started)) = h.search {
+        let age = h.frames - started;
+        if age == 3 || age == 10 {
+            let addr = SocketAddr::from(([192, 0, 2, age as u8], arena_net::session::GAME_PORT));
+            let ad = arena_net_io::udp::Advertisement {
+                nonce,
+                name: format!("LAN room {age}"),
+                port: addr.port(),
+                occupied: 1,
+                capacity: 2,
+            };
+            h.events.try_send(service::Event::Found(addr, ad)).unwrap();
+        }
+        if age == 120 {
+            h.events
+                .try_send(service::Event::SearchFinished(nonce, None))
+                .unwrap();
+            h.search = None;
         }
     }
     if !h.started {
@@ -206,9 +231,10 @@ fn tick(world: &mut World) {
             .players
             .values()
             .all(|p| p.size > 0 && h.client.bots.contains_key(&p.digest))
-        && !h.client.players[&1].ready
+        && !h.client_ready_sent
     {
         h.client.request(Request::Ready(true)).unwrap();
+        h.client_ready_sent = true;
     }
     if h.stage >= 5 && h.stage <= 7 && h.client.stage == Stage::Playing {
         let document = world
@@ -257,6 +283,9 @@ fn click(world: &mut World, h: &mut Harness, name: &str) {
     let rect = hit.rect.intersect(hit.clip);
     assert!(!rect.is_empty(), "Clipped control {name}");
     let point = output.origin + rect.center() * output.scale;
+    click_at(world, h, point);
+}
+fn click_at(world: &mut World, h: &mut Harness, point: Vec2) {
     let (e, mut w) = world
         .query::<(Entity, &mut Window)>()
         .single_mut(world)
@@ -269,6 +298,49 @@ fn click(world: &mut World, h: &mut Harness, name: &str) {
     });
     h.release = Some(e);
 }
+fn key(world: &mut World, key_code: KeyCode, text: Option<&str>, state: ButtonState) {
+    use bevy::input::keyboard::{Key, KeyboardInput};
+    let window = world
+        .query_filtered::<Entity, With<Window>>()
+        .single(world)
+        .unwrap();
+    world.write_message(KeyboardInput {
+        window,
+        key_code,
+        logical_key: text.map_or(
+            Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+            |s| Key::Character(s.into()),
+        ),
+        state,
+        text: text.map(Into::into),
+        repeat: false,
+    });
+}
+fn tap(world: &mut World, code: KeyCode, text: Option<&str>) {
+    key(world, code, text, ButtonState::Pressed);
+    key(world, code, None, ButtonState::Released);
+}
+fn check_ready(world: &World, slot: usize, ready: bool) {
+    let output = world.resource::<legacy_ui::Output>();
+    let name = format!("p{slot}/ready checkbox");
+    let point = output.regions[&name].center().as_uvec2();
+    let image = world
+        .resource::<Assets<Image>>()
+        .get(&output.image)
+        .unwrap();
+    let data = image.data.as_ref().unwrap();
+    let i = 4 * (point.y * image.width() + point.x) as usize;
+    assert_eq!(
+        data[i + 1] > 220 && data[i] < 30 && data[i + 2] < 30,
+        ready,
+        "Painted Ready for slot {slot}"
+    );
+    assert_eq!(
+        output.hits.iter().any(|hit| hit.name == name),
+        slot == world.resource::<Multiplayer>().local
+    );
+}
+
 fn shot(world: &mut World, h: &Harness, name: &str) {
     world
         .spawn(bevy::render::view::screenshot::Screenshot::image(
@@ -277,6 +349,42 @@ fn shot(world: &mut World, h: &Harness, name: &str) {
         .observe(bevy::render::view::screenshot::save_to_disk(format!(
             "logs/multiplayer-{name}.png"
         )));
+}
+fn resize_check_window(world: &mut World, image: &Handle<Image>, width: u32, height: u32) {
+    world
+        .query::<&mut Window>()
+        .single_mut(world)
+        .unwrap()
+        .resolution
+        .set_physical_resolution(width, height);
+    *world
+        .resource_mut::<Assets<Image>>()
+        .get_mut(image)
+        .unwrap() = Image::new_target_texture(
+        width,
+        height,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        None,
+    );
+}
+
+fn check_footer(world: &World) {
+    let output = world.resource::<legacy_ui::Output>();
+    let mut right = 0.0;
+    for button in ["Options button", "MainMenu button", "Help button"] {
+        let mut hits = output.hits.iter().filter(|hit| hit.name == button);
+        let hit = hits.next().expect("Missing footer button");
+        assert!(hits.next().is_none(), "Duplicate {button}");
+        let r = hit.rect.intersect(hit.clip);
+        assert!(!r.is_empty() && r.min.x >= right);
+        right = r.max.x;
+    }
+    assert!(
+        !output
+            .hits
+            .iter()
+            .any(|hit| matches!(hit.name.as_str(), "credits button" | "Quit button"))
+    );
 }
 fn inspect(world: &mut World) {
     let mut h = world.remove_non_send::<Harness>().unwrap();
@@ -316,7 +424,104 @@ fn inspect(world: &mut World) {
                     .find("Gamespy Logo [Image]")
                     .is_none()
             );
+            check_footer(world);
             shot(world, &h, "browse");
+            h.stage = 105;
+        }
+        105 => {
+            resize_check_window(world, &h.image, 1280, 720);
+            h.stage = 106;
+        }
+        106 => {
+            check_footer(world);
+            shot(world, &h, "browse-wide");
+            h.stage = 107;
+        }
+        107 => {
+            resize_check_window(world, &h.image, 800, 600);
+            h.stage = 108;
+        }
+        108 => {
+            check_footer(world);
+            click(world, &mut h, "Refresh button");
+            h.stage = 110;
+        }
+        110 => {
+            let state = world.resource::<legacy_ui::State>();
+            assert!(state.dialogs.is_empty(), "Refresh opened a modal");
+            let rows = &state.cells["server listbox"];
+            assert!(rows[0].label.starts_with("LAN room"));
+            assert!(rows[5].label.starts_with("LAN room"));
+            if let Some(progress) = rows.get(10) {
+                assert_eq!(rows.len(), 11);
+                assert!(progress.key.is_empty());
+                if h.search_labels.last() != Some(&progress.label) {
+                    h.search_labels.push(progress.label.clone());
+                    if progress.label == "Searching.." {
+                        shot(world, &h, "lan-search");
+                    }
+                }
+                world.insert_non_send(h);
+                return;
+            }
+            assert_eq!(rows.len(), 10);
+            assert!(h.search_labels.windows(4).any(
+                |labels| labels == ["Searching.", "Searching..", "Searching...", "Searching."]
+            ));
+            click(world, &mut h, "IROH button");
+            h.stage = 100;
+        }
+        100 => {
+            assert!(world.resource::<Multiplayer>().join_iroh);
+            assert!(world.resource::<Multiplayer>().ip_dialog);
+            assert_eq!(world.resource::<legacy_ui::State>().focused, "IP address");
+            shot(world, &h, "iroh-join");
+            tap(world, KeyCode::KeyA, Some(&"ab".repeat(32)));
+            h.stage = 111;
+        }
+        111 => {
+            let out = world.resource::<legacy_ui::Output>();
+            let field = &out.fields["IP address"];
+            assert_eq!(field.value, "ab".repeat(32));
+            assert!(field.scroll.x > 0. && field.clip.contains(field.point(64)));
+            shot(world, &h, "input-end");
+            tap(world, KeyCode::Home, None);
+            h.stage = 112;
+        }
+        112 => {
+            let out = world.resource::<legacy_ui::Output>();
+            let field = &out.fields["IP address"];
+            assert_eq!(field.scroll.x, 0.);
+            let point = out.origin + field.point(3) * out.scale;
+            click_at(world, &mut h, point);
+            h.stage = 113;
+        }
+        113 => {
+            assert_eq!(world.resource::<legacy_ui::State>().edit.head, 3);
+            key(world, KeyCode::ShiftLeft, None, ButtonState::Pressed);
+            tap(world, KeyCode::ArrowRight, None);
+            tap(world, KeyCode::ArrowRight, None);
+            key(world, KeyCode::ShiftLeft, None, ButtonState::Released);
+            h.stage = 114;
+        }
+        114 => {
+            assert_eq!(world.resource::<legacy_ui::State>().edit.selection(), 3..5);
+            shot(world, &h, "input-selection");
+            tap(world, KeyCode::KeyZ, Some("Z"));
+            tap(world, KeyCode::Delete, None);
+            tap(world, KeyCode::Backspace, None);
+            h.stage = 115;
+        }
+        115 => {
+            assert_eq!(
+                world.resource::<Multiplayer>().join_input,
+                format!("aba{}", "ab".repeat(29))
+            );
+            assert_eq!(world.resource::<legacy_ui::State>().edit.head, 3);
+            click(world, &mut h, "cancel button");
+            h.stage = 101;
+        }
+        101 => {
             click(world, &mut h, "IP connect button");
             h.stage = 1;
         }
@@ -331,7 +536,36 @@ fn inspect(world: &mut World) {
             h.stage = 3;
         }
         3 => {
+            click(world, &mut h, "internet radio but");
+            h.stage = 102;
+        }
+        102 => {
+            let net = world.resource::<Multiplayer>();
+            let invite = net
+                .invite
+                .as_ref()
+                .expect("Iroh selection must create an invite immediately");
+            assert_eq!(invite.code.to_string().replace('-', "").len(), 8);
+            assert_eq!(invite.endpoint_id().to_string().len(), 64);
+            assert!(
+                world
+                    .resource::<legacy_ui::Output>()
+                    .hits
+                    .iter()
+                    .any(|hit| hit.name == "copy endpoint"
+                        && !hit.rect.intersect(hit.clip).is_empty())
+            );
+            shot(world, &h, "iroh-create");
+            click(world, &mut h, "LAN radio but");
+            h.stage = 103;
+        }
+        103 => {
+            assert!(world.resource::<Multiplayer>().invite.is_none());
             shot(world, &h, "create");
+            click(world, &mut h, "internet radio but");
+            h.stage = 104;
+        }
+        104 => {
             click(world, &mut h, "start game button");
             h.stage = 4;
         }
@@ -345,15 +579,53 @@ fn inspect(world: &mut World) {
                 world.insert_non_send(h);
                 return;
             }
-            shot(world, &h, "lobby");
+            assert!(
+                world
+                    .resource::<legacy_ui::Output>()
+                    .hits
+                    .iter()
+                    .any(|hit| hit.name == "copy endpoint")
+            );
+            if !world
+                .resource::<Multiplayer>()
+                .players
+                .iter()
+                .any(|p| p.slot == 1 && p.ready)
+            {
+                world.insert_non_send(h);
+                return;
+            }
+            check_ready(world, 0, false);
+            check_ready(world, 1, true);
+            h.client.request(Request::Ready(false)).unwrap();
+            h.stage = 120;
+        }
+        120 => {
+            if world
+                .resource::<Multiplayer>()
+                .players
+                .iter()
+                .any(|p| p.ready)
+            {
+                world.insert_non_send(h);
+                return;
+            }
+            check_ready(world, 1, false);
+            h.client.request(Request::Ready(true)).unwrap();
             click(world, &mut h, "p0/ready checkbox");
             h.stage = 5;
         }
         5 => {
-            if !h.host.can_start() {
+            if !world.resource::<Multiplayer>().start_available
+                || !h.host.can_start()
+                || !h.client.players.values().all(|p| p.ready)
+            {
                 world.insert_non_send(h);
                 return;
             }
+            check_ready(world, 0, true);
+            check_ready(world, 1, true);
+            shot(world, &h, "lobby");
             click(world, &mut h, "begin match button");
             h.stage = 6;
         }

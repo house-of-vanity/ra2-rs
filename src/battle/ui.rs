@@ -94,13 +94,7 @@ pub(crate) fn bind(
         state.popup = None;
     }
     *last = Some((page, s.revision));
-    *state = State {
-        revision: state.revision + 1,
-        scroll: state.scroll.clone(),
-        focused: state.focused.clone(),
-        popup: state.popup.clone(),
-        ..default()
-    };
+    state.rebuild();
     state.root = assets.widget("common/gamewindow.gib").ok();
     for key in ["chat group", "chat displaybox"] {
         state.visibility.insert(key.into(), false);

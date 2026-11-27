@@ -2,8 +2,10 @@
 pub mod assets;
 pub mod canvas;
 pub(crate) mod floating;
+mod font;
 mod input;
 pub mod layout;
+pub(crate) mod text_field;
 pub(crate) mod widgets;
 use crate::frontend::{MenuCamera, Navigation};
 use bevy::{
@@ -54,6 +56,7 @@ pub struct State {
     pub values: BTreeMap<String, String>,
     pub checked: BTreeMap<String, bool>,
     pub disabled: BTreeSet<String>,
+    pub read_only: BTreeSet<String>,
     pub cells: BTreeMap<String, Vec<Cell>>,
     pub viewports: BTreeSet<String>,
     pub lines: Vec<Lines>,
@@ -62,6 +65,7 @@ pub struct State {
     pub hover: String,
     pub pressed: String,
     pub focused: String,
+    pub edit: text_field::Editing,
     pub revision: u64,
     pub attachments: Vec<(String, Arc<Widget>)>,
     pub interactive: BTreeSet<String>,
@@ -72,8 +76,24 @@ pub struct State {
     pub visibility: BTreeMap<String, bool>,
     pub control_drag: Option<(String, Vec2)>,
 }
+impl State {
+    /// Rebuild the page from its data while preserving the player's interaction.
+    pub fn rebuild(&mut self) {
+        *self = Self {
+            revision: self.revision + 1,
+            focused: std::mem::take(&mut self.focused),
+            edit: std::mem::take(&mut self.edit),
+            hover: std::mem::take(&mut self.hover),
+            pressed: std::mem::take(&mut self.pressed),
+            scroll: std::mem::take(&mut self.scroll),
+            popup: self.popup.take(),
+            ..default()
+        };
+    }
+}
 #[derive(Clone, Debug)]
 pub enum UiEvent {
+    Submit(String),
     Move {
         name: String,
         point: Vec2,
@@ -117,6 +137,7 @@ pub struct Output {
     pub root: Entity,
     pub viewport_root: Entity,
     pub hits: Vec<layout::Hit>,
+    pub fields: BTreeMap<String, text_field::FieldLayout>,
     pub scroll_limits: BTreeMap<String, usize>,
     pub regions: BTreeMap<String, Rect>,
     pub scale: f32,
@@ -205,6 +226,7 @@ fn setup(
         root,
         viewport_root,
         hits: vec![],
+        fields: BTreeMap::new(),
         scroll_limits: BTreeMap::new(),
         regions: BTreeMap::new(),
         scale: 1.0,
@@ -343,6 +365,7 @@ fn paint(
         let _ = std::fs::write("logs/editor-hit-regions.tsv", text);
     }
     output.hits = frame.hits;
+    output.fields = frame.fields;
     output.scroll_limits = frame.scroll_limits;
     output.regions = frame.regions;
     output.scale = scale;
