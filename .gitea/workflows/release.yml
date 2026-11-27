@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+  CARGO_NET_RETRY: '5'
+
+jobs:
+  # Gitea's artifact service accepts the v3 upload/download protocol.
+  linux:
+    name: Build Linux x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build against Ubuntu 22.04
+        uses: docker://ubuntu:22.04
+        with:
+          entrypoint: bash
+          args: tools/ci/build-release.sh linux-x86_64
+      - uses: actions/upload-artifact@v3
+        with:
+          name: linux-x86_64
+          path: dist/ra2-rs-linux-x86_64
+          if-no-files-found: error
+
+  desktop:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+          - platform: windows-x86_64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and check the executable
+        shell: bash
+        run: bash tools/ci/build-release.sh "${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/ra2-rs-${{ matrix.platform }}*
+          if-no-files-found: error
+
+  check-linux:
+    name: Run the Linux release binary
+    needs: linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v3
+        with:
+          name: linux-x86_64
+          path: dist
+      - name: Ubuntu 22.04
+        uses: docker://ubuntu:22.04
+        with:
+          entrypoint: bash
+          args: tools/ci/check-linux.sh
+      - name: Debian 12
+        uses: docker://debian:12-slim
+        with:
+          entrypoint: bash
+          args: tools/ci/check-linux.sh
+      - name: Arch Linux
+        uses: docker://archlinux:base
+        with:
+          entrypoint: bash
+          args: tools/ci/check-linux.sh
+
+  publish:
+    name: Publish to Gitea Releases
+    needs: [desktop, check-linux]
+    runs-on: ubuntu-latest
+    container: node:22-bookworm-slim
+    permissions:
+      contents: write
+    steps:
+      - name: Install release tools
+        run: apt-get update -q && apt-get install -y --no-install-recommends ca-certificates curl git jq
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      - name: Attach binaries and publish the release
+        env:
+          RELEASE_TOKEN: ${{ github.token }}
+        run: bash tools/ci/publish-release.sh
